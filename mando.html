@@ -164,6 +164,7 @@
       <div class="row"><span>Mostrar todos los dispositivos Bluetooth</span><input type="checkbox" id="showAll"></div>
       <div class="row"><span>Ranuras del hub que se usan</span><select id="slots"></select></div>
       <div class="row"><span>Modo rápido</span><input type="checkbox" id="fast"></div>
+      <div class="row"><span>Medir arranques, paradas y huecos (diagnóstico)</span><input type="checkbox" id="diag"></div>
       <div class="hint">Cada movimiento es un mini-programa que se ejecuta en una ranura del hub. Con 10 ranuras, el mando <b>precarga</b> los más usados
         (reposo, adelante, atrás, giros y brazo) al conectar y después solo tiene que arrancarlos, que es mucho más rápido que subirlos cada vez.
         <b>Esas ranuras del hub se sobrescriben</b>: si guardas tus propios programas en ellas, elige menos ranuras.
@@ -269,10 +270,14 @@ const cfg = {
   portLeft: "A", portRight: "E", portArm: "D",
   invLeft: true, invRight: false, invArm: false,
   maxDrive: 50, maxArm: 50,
-  lease: 1500, armHold: true, fast: true, slots: 10,
+  lease: 3000, armHold: true, fast: true, slots: 10, diag: true, ver: 2,
   hubName: "", showAll: false,
 };
-try { Object.assign(cfg, JSON.parse(localStorage.getItem("spikeMando5") || "{}")); } catch (e) {}
+try {
+  const saved = JSON.parse(localStorage.getItem("spikeMando5") || "{}");
+  if ((saved.ver || 1) < 2) { if (saved.lease === 1500) saved.lease = 3000; saved.ver = 2; }   // el valor antiguo reiniciaba el programa demasiado a menudo
+  Object.assign(cfg, saved);
+} catch (e) {}
 const saveCfg = () => { try { localStorage.setItem("spikeMando5", JSON.stringify(cfg)); } catch (e) {} };
 
 function fillSelect(sel, opts, value) {
@@ -281,9 +286,9 @@ function fillSelect(sel, opts, value) {
 }
 const portOpts = PORTS.map(p => [p, "Puerto " + p]);
 for (const k of ["portLeft", "portRight", "portArm"]) fillSelect($(k), portOpts, cfg[k]);
-fillSelect($("lease"), [[1500, "1,5 s (recomendado)"], [3000, "3 s"], [0, "Desactivada (no recomendado)"]], cfg.lease);
+fillSelect($("lease"), [[1500, "1,5 s (más seguro, más paradas)"], [3000, "3 s (recomendado)"], [5000, "5 s (menos paradas)"], [0, "Desactivada (no recomendado)"]], cfg.lease);
 fillSelect($("slots"), [[10, "10 ranuras (10–19), con precarga (recomendado)"], [4, "4 ranuras (16–19), sin precarga"], [2, "2 ranuras (18–19), sin precarga"]], cfg.slots);
-for (const k of ["invLeft", "invRight", "invArm", "armHold", "fast", "showAll"]) $(k).checked = cfg[k];
+for (const k of ["invLeft", "invRight", "invArm", "armHold", "fast", "showAll", "diag"]) $(k).checked = cfg[k];
 for (const k of ["maxDrive", "maxArm"]) $(k).value = cfg[k];
 $("hubName").value = cfg.hubName;
 const showVals = () => { $("vDrive").textContent = cfg.maxDrive + " %"; $("vArm").textContent = cfg.maxArm + " %"; };
@@ -295,6 +300,11 @@ for (const k of ["portLeft", "portRight", "portArm"]) $(k).addEventListener("cha
 for (const k of ["lease", "slots"]) $(k).addEventListener("change", e => { cfg[k] = +e.target.value; settingsChanged(); });
 for (const k of ["invLeft", "invRight", "invArm", "armHold", "fast", "showAll"]) $(k).addEventListener("change", e => { cfg[k] = e.target.checked; settingsChanged(); });
 for (const k of ["maxDrive", "maxArm"]) $(k).addEventListener("input", e => { cfg[k] = +e.target.value; showVals(); settingsChanged(); });
+$("diag").addEventListener("change", e => {                    // con diagnóstico el hub informa de los motores más a menudo
+  cfg.diag = e.target.checked; saveCfg();
+  if (connected()) request(MSG.deviceNotif(cfg.diag ? 80 : 300), 0x29).catch(() => {});
+  refreshInfo();
+});
 $("hubName").addEventListener("input", e => { cfg.hubName = e.target.value; saveCfg(); });
 $("btnSettings").addEventListener("click", () => $("ajustes").classList.add("open"));
 $("closeSettings").addEventListener("click", () => $("ajustes").classList.remove("open"));
@@ -307,8 +317,9 @@ const state = {
   motors: {}, motorsKnown: false, battery: null, lastMs: null,
   sentKey: null, sending: false, fails: 0, running: null, starting: null,
   slotText: {}, lastUse: {}, tick: 0, warming: false, warm: null,   // lo que hay guardado en cada ranura del hub
-  joy: { x: 0, y: 0 }, arm: 0, test: null,
-  needStop: false, renewTimer: null, testTimer: null, sendTimer: null, warmTimer: null,
+  joy: { x: 0, y: 0 }, arm: 0, test: null, lvl: { l: 0, r: 0 },
+  needStop: false, renewTimer: null, renewNext: false, testTimer: null, sendTimer: null, warmTimer: null,
+  diag: { key: null, at: 0, kind: null, speedAtCmd: 0, moved: false, stopped: false, zeroSince: null, startMs: null, stopMs: null, gaps: 0, maxGap: 0 },
 };
 const connected = () => !!(state.device && state.device.gatt && state.device.gatt.connected && state.rx);
 const slotPool = () => Array.from({ length: cfg.slots }, (_, i) => 20 - cfg.slots + i);   // las últimas N ranuras (0–19)
@@ -331,6 +342,12 @@ function refreshInfo() {
   }
   if (state.lastMs !== null) parts.push("último envío " + state.lastMs + " ms");
   if (state.warm) parts.push("precargando " + state.warm.done + "/" + state.warm.total);
+  const d = state.diag;
+  if (cfg.diag) {
+    if (d.startMs !== null) parts.push("arranque " + d.startMs + " ms");
+    if (d.stopMs !== null) parts.push("parada " + d.stopMs + " ms");
+    if (d.gaps) parts.push("huecos " + d.gaps + " (máx " + d.maxGap + " ms)");
+  }
   $("info").textContent = parts.join("  ·  ");
 }
 
@@ -338,22 +355,63 @@ function refreshInfo() {
 const moving = t => Object.values(t).some(v => v !== 0);
 function computeTarget() {
   if (state.test) { const t = { A: 0, B: 0, C: 0, D: 0, E: 0, F: 0 }; t[state.test.port] = state.test.pct; return t; }
-  return targetFrom(state.joy.x, state.joy.y, state.arm);
+  return targetFrom(state.joy.x, state.joy.y, state.arm, state.lvl);
 }
-function targetFrom(x, y, arm) {
+// prev (opcional) guarda el nivel anterior de cada rueda para dar histéresis: cada cambio de nivel reinicia el programa del hub
+// y las ruedas se paran un instante, así que no se cambia de nivel por un simple temblor del dedo.
+function targetFrom(x, y, arm, prev) {
   const t = { A: 0, B: 0, C: 0, D: 0, E: 0, F: 0 };
   let l = y + x, r = y - x;                                  // mezcla tipo tanque: Y avanza, X gira
   const m = Math.max(1, Math.abs(l), Math.abs(r));
-  const level = v => Math.round(v / m * 4) / 4;              // 5 niveles: 0, 25, 50, 75, 100 % de la velocidad máxima
-  l = Math.round(level(l) * cfg.maxDrive) + 0; r = Math.round(level(r) * cfg.maxDrive) + 0;
+  const level = (v, p) => {                                  // 5 niveles: 0, 25, 50, 75, 100 % de la velocidad máxima
+    const n = Math.round(v / m * 4) / 4;
+    return prev && n !== p && Math.abs(v / m - p) <= 0.195 ? p : n;
+  };
+  const ll = level(l, prev ? prev.l : 0), rl = level(r, prev ? prev.r : 0);
+  if (prev) { prev.l = ll; prev.r = rl; }
+  l = Math.round(ll * cfg.maxDrive) + 0; r = Math.round(rl * cfg.maxDrive) + 0;
   t[cfg.portLeft] = cfg.invLeft ? -l : l;
   t[cfg.portRight] = cfg.invRight ? -r : r;
   if (cfg.portArm !== cfg.portLeft && cfg.portArm !== cfg.portRight) t[cfg.portArm] = arm * cfg.maxArm * (cfg.invArm ? -1 : 1);
   for (const p of PORTS) t[p] = t[p] + 0;                    // evita -0
   return t;
 }
+/* ================= DIAGNÓSTICO (mide en el robot real) ================= */
+// El hub informa de la velocidad real de cada motor; con eso se mide cuánto tarda en arrancar y en parar,
+// y cuántas veces las ruedas se quedan paradas con la orden activa (cada reinicio de programa deja un hueco).
+const wheelsOf = () => [cfg.portLeft, cfg.portRight];
+const wheelSpeed = () => Math.max(...wheelsOf().map(q => Math.abs((state.motors[q] && state.motors[q].speed) || 0)));
+const wheelCmd = () => Math.max(...wheelsOf().map(q => Math.abs(state.target[q])));
+function diagCommand() {
+  const d = state.diag, key = JSON.stringify(state.target);
+  if (key === d.key) return;
+  d.key = key; d.at = performance.now(); d.speedAtCmd = wheelSpeed();
+  d.kind = wheelCmd() >= 20 ? "orden" : "parada";
+  d.moved = false; d.stopped = false; d.zeroSince = null;
+}
+function diagTelemetry() {
+  if (!cfg.diag) return;
+  const d = state.diag, now = performance.now(), spd = wheelSpeed();
+  if (d.kind === "orden") {
+    if (!d.moved) {
+      if (spd > 2) {
+        d.moved = true;
+        if (d.speedAtCmd <= 2) { d.startMs = Math.round(now - d.at); log("diag: las ruedas arrancaron " + d.startMs + " ms después de la orden"); refreshInfo(); }
+      }
+    } else if (spd <= 2) {
+      if (d.zeroSince === null) d.zeroSince = now;
+    } else if (d.zeroSince !== null) {
+      const gap = Math.round(now - d.zeroSince); d.zeroSince = null;
+      if (gap >= 60) { d.gaps++; d.maxGap = Math.max(d.maxGap, gap); log("diag: HUECO: ruedas paradas ~" + gap + " ms con la orden activa"); refreshInfo(); }
+    }
+  } else if (d.kind === "parada" && !d.stopped && d.speedAtCmd > 2 && spd <= 2) {
+    d.stopped = true; d.stopMs = Math.round(now - d.at);
+    log("diag: las ruedas se pararon " + d.stopMs + " ms después de la orden de parar"); refreshInfo();
+  }
+}
 function recompute(send = true) {
   state.target = computeTarget();
+  diagCommand();
   const t = state.target;
   const dir = state.arm > 0 ? "sube" : state.arm < 0 ? "baja" : "parado";
   $("readout").innerHTML = "Izq. (" + cfg.portLeft + "): " + t[cfg.portLeft] + " %<br>Der. (" + cfg.portRight + "): " + t[cfg.portRight] +
@@ -468,8 +526,8 @@ for (const b of document.querySelectorAll("[data-test]")) {
     stopAll();
     state.test = { port, pct: inv ? -40 : 40 };
     recompute();
-    clearTimeout(state.testTimer);
-    state.testTimer = setTimeout(() => { state.test = null; recompute(); }, TEST_MS);
+    clearTimeout(state.testTimer);                            // el tiempo de prueba se cuenta desde que el motor arranca (ver pump);
+    state.testTimer = setTimeout(() => { state.test = null; recompute(); }, 8000);   // esto es solo un seguro por si nunca llega a arrancar
     msg("Probando el motor del puerto " + port + "…");
   });
 }
@@ -513,7 +571,8 @@ async function connect() {
     const dv = new DataView(info.buffer, info.byteOffset);
     state.info = { fw: info[5] + "." + info[6] + "." + dv.getUint16(7, true), maxPacket: dv.getUint16(9, true), maxChunk: dv.getUint16(13, true) };
     log("Info: " + JSON.stringify(state.info));
-    await request(MSG.deviceNotif(300), 0x29, 4000);
+    await request(MSG.deviceNotif(cfg.diag ? 80 : 300), 0x29, 4000);
+    Object.assign(state.diag, { key: null, kind: null, moved: false, stopped: false, zeroSince: null, startMs: null, stopMs: null, gaps: 0, maxGap: 0 });
     state.sentKey = null; state.running = null; state.starting = null; state.fails = 0; state.needStop = false;
     state.slotText = {}; state.lastUse = {}; state.warming = false; state.warm = null;   // no se sabe qué hay en las ranuras del hub
     fastStop(true);
@@ -604,12 +663,13 @@ function parseDevices(m) {
   while (i < 3 + size && i < m.length && m[i] in sizes) {
     const t = m[i];
     if (t === 0x00) state.battery = m[i + 1];
-    if (t === 0x0A && PORTS[m[i + 1]]) motors[PORTS[m[i + 1]]] = { type: m[i + 2], pos: dv.getInt32(i + 8, true) };
+    if (t === 0x0A && PORTS[m[i + 1]]) motors[PORTS[m[i + 1]]] = { type: m[i + 2], speed: dv.getInt8(i + 7), pos: dv.getInt32(i + 8, true) };
     i += sizes[t];
   }
   const changed = Object.keys(motors).sort().join() !== Object.keys(state.motors).sort().join() || !state.motorsKnown;
   state.motors = motors; state.motorsKnown = true;
   if (changed) { log("Motores detectados: " + (Object.keys(motors).join(", ") || "ninguno")); recompute(); scheduleWarm(); }
+  diagTelemetry();
   refreshInfo();
 }
 
@@ -648,14 +708,23 @@ async function pump() {
   state.sending = true;
   const t0 = performance.now();
   let started = false;
+  const renewal = state.renewNext; state.renewNext = false;
   try {
-    started = await sendState(target, key);
+    started = await sendState(target, key, renewal);
     if (started) {
       state.sentKey = key; state.fails = 0;
       state.lastMs = Math.round(performance.now() - t0); refreshInfo();
+      if (state.test && !state.test.timed) {                  // la prueba de motor dura TEST_MS desde que arrancó de verdad
+        state.test.timed = true;
+        clearTimeout(state.testTimer);
+        state.testTimer = setTimeout(() => { state.test = null; recompute(); }, TEST_MS);
+      }
       clearTimeout(state.renewTimer);
       if (moving(target) && cfg.lease && !state.test) {
-        state.renewTimer = setTimeout(() => { state.sentKey = null; scheduleSend(); }, Math.round(cfg.lease * 0.45));
+        // Cada renovación reinicia el programa en el hub (y las ruedas se paran un instante): se renueva lo más tarde posible,
+        // dejando margen para que la orden llegue antes de que venza el temporizador.
+        const renewIn = Math.max(cfg.lease * 0.5, cfg.lease - 700);
+        state.renewTimer = setTimeout(() => { state.sentKey = null; state.renewNext = true; scheduleSend(); }, Math.round(renewIn));
       }
     }
   } catch (e) {
@@ -727,7 +796,8 @@ async function startSlot(slot) {
   } finally { state.starting = null; }
 }
 // Devuelve true si el programa llegó a arrancar.
-async function sendState(target, key) {
+async function sendState(target, key, renewal = false) {
+  const t0 = performance.now();
   if (!moving(target)) fastStop();                            // en reposo, primero se corta lo que esté en marcha
   const text = programText(target, leaseFor(target));
   // Si mientras se subía un programa de movimiento ya pediste parar, no se arranca. Si solo cambió la velocidad
@@ -735,13 +805,16 @@ async function sendState(target, key) {
   const stale = () => moving(target) && !moving(state.target);
 
   let slot = findSlot(text);
+  const cachedSlot = slot;
   if (slot === null) {                                        // no estaba guardado: se sube primero
     slot = pickVictim();
     await uploadInto(slot, text);
     if (stale()) return false;                                // cambió mientras se subía: no arrancar un estado viejo
   } else if (stale()) return false;
   state.lastUse[slot] = ++state.tick;
+  const cached = slot === cachedSlot;
   await startSlot(slot);
+  if (cfg.diag) log("diag: inicio ranura " + slot + " (" + (renewal ? "renovación" : "cambio") + (cached ? ", guardado" : ", subido") + ") " + Math.round(performance.now() - t0) + " ms");
   msg("");
   return true;
 }
