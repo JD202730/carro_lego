@@ -302,10 +302,10 @@ for (const k of ["portLeft", "portRight", "portArm"]) $(k).addEventListener("cha
 for (const k of ["lease", "slots"]) $(k).addEventListener("change", e => { cfg[k] = +e.target.value; settingsChanged(); });
 for (const k of ["invLeft", "invRight", "invArm", "armHold", "fast", "showAll"]) $(k).addEventListener("change", e => { cfg[k] = e.target.checked; settingsChanged(); });
 for (const k of ["maxDrive", "maxArm"]) $(k).addEventListener("input", e => { cfg[k] = +e.target.value; showVals(); settingsChanged(); });
-$("diag").addEventListener("change", e => {                    // con diagnóstico el hub informa de los motores más a menudo
-  cfg.diag = e.target.checked; saveCfg();
-  if (connected()) request(MSG.deviceNotif(cfg.diag ? 100 : 300), 0x29).catch(() => {});
-  refreshInfo();
+$("diag").addEventListener("change", e => {                    // con diagnóstico el hub informa de los motores más a menudo y los programas llevan marcas
+  cfg.diag = e.target.checked;
+  if (connected()) request(MSG.deviceNotif(cfg.diag ? 200 : 300), 0x29).catch(() => {});
+  refreshInfo(); settingsChanged();                             // el texto de los programas cambia: se vuelve a precargar
 });
 $("hubName").addEventListener("input", e => { cfg.hubName = e.target.value; saveCfg(); });
 $("btnCopyLog").addEventListener("click", async () => {         // copia el registro en orden cronológico para pegarlo en el chat
@@ -440,10 +440,6 @@ function recompute(send = true) {
   state.target = computeTarget();
   diagCommand();
   const t = state.target;
-  // Al soltar el joystick la parada sale YA, sin esperar a que el envío en curso termine (antes podía tardar hasta 1,5 s).
-  const nowMoving = moving(t);
-  if (state.prevMoving && !nowMoving && connected()) fastStop();
-  state.prevMoving = nowMoving;
   const dir = state.arm > 0 ? "sube" : state.arm < 0 ? "baja" : "parado";
   $("readout").innerHTML = "Izq. (" + cfg.portLeft + "): " + t[cfg.portLeft] + " %<br>Der. (" + cfg.portRight + "): " + t[cfg.portRight] +
     " %<br>Brazo (" + cfg.portArm + "): " + dir;
@@ -532,7 +528,8 @@ function stopAll() {
   if (joy.pid !== null) joy.locked = true;                   // el dedo sigue apoyado: se ignora hasta que lo levantes
   for (const b of document.querySelectorAll(".armbtn")) b.classList.remove("on");
   recompute(false);
-  if (connected()) fastStop();                                // corte inmediato, sin esperar a subir nada
+  // No se envía una orden de "parar programa": en el hub real eso retrasa ~0,75 s el arranque siguiente. Se arranca directamente
+  // el programa de reposo (ya guardado), que sustituye al que estaba en marcha y frena los motores.
   scheduleSend();
 }
 // Para ya el programa en marcha, sin esperar respuesta: la ranura que corre, la que justo está arrancando y la última que se arrancó
@@ -604,7 +601,7 @@ async function connect() {
     const dv = new DataView(info.buffer, info.byteOffset);
     state.info = { fw: info[5] + "." + info[6] + "." + dv.getUint16(7, true), maxPacket: dv.getUint16(9, true), maxChunk: dv.getUint16(13, true) };
     log("Info: " + JSON.stringify(state.info));
-    await request(MSG.deviceNotif(cfg.diag ? 100 : 300), 0x29, 4000);
+    await request(MSG.deviceNotif(cfg.diag ? 200 : 300), 0x29, 4000);
     Object.assign(state.diag, { key: null, kind: null, moved: false, stopped: false, zeroSince: null, startMs: null, stopMs: null, gaps: 0, maxGap: 0 });
     state.sentKey = null; state.running = null; state.starting = null; state.fails = 0; state.needStop = false;
     state.slotText = {}; state.lastUse = {}; state.warming = false; state.warm = null;   // no se sabe qué hay en las ranuras del hub
@@ -695,7 +692,7 @@ function handleMessage(m) {
   if (REPLY_NAMES[m[0]]) dlog("<< " + REPLY_NAMES[m[0]] + (m[1] === 0 ? " ACK" : " NACK") + (i >= 0 && state.waiters[i].ignore ? " (de una parada rápida)" : i < 0 ? " (nadie la esperaba)" : ""));
   if (i >= 0) { const w = state.waiters.splice(i, 1)[0]; clearTimeout(w.timer); if (!w.ignore) w.resolve(m); }
   if (m[0] === 0x3C && connected()) parseDevices(m);
-  else if (m[0] === 0x21) log("Hub: " + new TextDecoder().decode(m.slice(1)).replace(/\0.*$/s, ""));
+  else if (m[0] === 0x21) { const t = new TextDecoder().decode(m.slice(1)).replace(/\0.*$/s, "").trim(); if (cfg.diag) dlog("<< consola del hub: " + t); else log("Hub: " + t); }
 }
 function parseDevices(m) {
   const dv = new DataView(m.buffer, m.byteOffset);
@@ -755,8 +752,11 @@ function programText(target, lease) {
     const max = (MOTOR_TYPES[state.typeOf[q]] || [0, 1000])[1];       // el tipo de motor se recuerda: si una lectura falla, el programa no cambia
     L.push(pct !== 0 ? "r(p." + q + "," + Math.round(pct * max / 100) + ")" : stopCall(q));
   }
+  // Con el diagnóstico, el propio programa avisa por la consola del hub cuando llega a este punto (ya dadas las órdenes a los motores)
+  // y cuando vence el temporizador: sirve para ver cuánto tarda de verdad el hub en ejecutar cada programa.
+  if (cfg.diag) L.push('print("ok ' + (used.filter(q => target[q] !== 0).map(q => q + target[q]).join(" ") || "reposo") + '")');
   L.push("async def w():");
-  if (lease > 0) { L.push(" await runloop.sleep_ms(" + lease + ")"); for (const q of used) L.push(" " + stopCall(q)); }
+  if (lease > 0) { L.push(" await runloop.sleep_ms(" + lease + ")"); for (const q of used) L.push(" " + stopCall(q)); if (cfg.diag) L.push(' print("fin-temporizador")'); }
   L.push(" while 1:await runloop.sleep_ms(1000)", "runloop.run(w())");
   return L.join("\n");
 }
@@ -806,15 +806,22 @@ async function stopRunning() {
   if (state.running !== null) await request(MSG.programFlow(true, state.running), 0x1F, 1500).catch(() => {});
   state.running = null;
 }
+// Una escritura sin confirmación puede perderse en el aire; si el hub se queda esperando el trozo ignora todo lo demás
+// (en tu registro: un trozo sin respuesta y después tres arranques sin respuesta). Por eso, si una respuesta no llega,
+// se reenvía el mismo mensaje una vez antes de dar el envío por fallido.
+async function requestTwice(payload, responseId, what) {
+  try { return await request(payload, responseId); }
+  catch (e) { log("No llegó la respuesta a " + what + "; se reenvía."); return request(payload, responseId); }
+}
 async function upload(program, slot) {
-  const up = await request(MSG.startUpload("program.py", slot, crc32(program)), 0x0D);
+  const up = await requestTwice(MSG.startUpload("program.py", slot, crc32(program)), 0x0D, "el inicio de la subida");
   if (up[1] !== 0) return false;
   const size = Math.max(4, state.info.maxChunk - (state.info.maxChunk % 4));
   let running = 0;
   for (let i = 0; i < program.length; i += size) {
     const part = program.slice(i, i + size);
     running = crc32(part, running);
-    const r = await request(MSG.chunk(running, Array.from(part)), 0x11);
+    const r = await requestTwice(MSG.chunk(running, Array.from(part)), 0x11, "un trozo del programa");
     if (r[1] !== 0) { log("El hub rechazó un trozo del programa (ranura " + slot + "); se reintenta."); return false; }
   }
   return true;
@@ -877,7 +884,6 @@ async function startSlot(slot, skip) {
 async function sendState(target, key, renewal = false) {
   const t0 = performance.now();
   state.diag.pumpAt = t0;
-  if (!moving(target)) fastStop();                            // en reposo, primero se corta lo que esté en marcha
   const text = programText(target, leaseFor(target));
   // Si ya cambiaste de movimiento mientras se preparaba este, no se arranca: el robot haría un instante el movimiento anterior.
   // Si pediste parar, nunca se arranca un movimiento. Para que un joystick que no para de moverse no deje el robot sin
