@@ -1,0 +1,711 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#34383d">
+<title>Mando SPIKE</title>
+<style>
+  :root {
+    --bg: #e4e4e4; --panel: #ffffff; --line: #b5b5b5; --text: #1d1d1d; --muted: #666666;
+    --bar: #34383d; --press: #c9d6e6; --stop: #c62828; --ok: #2e7d32; --warn: #b26a00; --bad: #c62828;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+    font: 15px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; touch-action: none; overscroll-behavior: none; }
+  body { display: flex; flex-direction: column; }
+
+  .bar { flex: none; background: var(--bar); color: #fff; display: flex; align-items: center; gap: 8px;
+    padding: max(6px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) 6px max(10px, env(safe-area-inset-left)); }
+  .bar .title { font-weight: 600; }
+  #estado { flex: 1; min-width: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #estado.ok { color: #9fe0a4; } #estado.warn { color: #ffd27a; } #estado.bad { color: #ff9c9c; }
+  @media (orientation: portrait) and (max-width: 560px) {
+    .bar { flex-wrap: wrap; row-gap: 4px; }
+    .bar .title { flex: 1; }
+    #estado { order: 3; flex-basis: 100%; }
+  }
+
+  .btn { font: inherit; color: var(--text); background: #f4f4f4; border: 1px solid #8c8c8c; border-radius: 3px;
+    padding: 8px 12px; cursor: pointer; touch-action: manipulation; }
+  .btn:active, .btn.on { background: var(--press); }
+  .bar .btn { background: #4b5056; color: #fff; border-color: #6a7077; padding: 7px 12px; }
+  .bar .btn:active { background: #5d646b; }
+
+  #aviso { flex: none; display: none; background: #fff3cd; color: #5c4400; border-bottom: 1px solid #d9c27a; padding: 8px 12px; font-size: 14px; }
+  .info { flex: none; font-size: 12px; color: var(--muted); padding: 4px 12px; background: #d4d4d4; border-bottom: 1px solid var(--line);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .stage { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 150px 1fr; gap: 10px;
+    padding: 10px max(12px, env(safe-area-inset-right)) 4px max(12px, env(safe-area-inset-left)); }
+  @media (orientation: portrait) { .stage { grid-template-columns: 1fr; grid-template-rows: 1.5fr auto 1fr; } }
+  .box { background: var(--panel); border: 1px solid var(--line); border-radius: 3px; padding: 8px; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  .box h2 { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--muted); }
+
+  .padwrap { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; container-type: size; }
+  .pad { position: relative; width: 50vmin; height: 50vmin; width: min(100cqw, 100cqh); height: min(100cqw, 100cqh);
+    border: 2px solid #777; border-radius: 50%; background: #f7f7f7; touch-action: none; }
+  .pad.active { background: #eef2f7; }
+  .pad::before, .pad::after { content: ""; position: absolute; background: #cfcfcf; }
+  .pad::before { left: 50%; top: 5%; bottom: 5%; width: 1px; }
+  .pad::after { top: 50%; left: 5%; right: 5%; height: 1px; }
+  .pad .lbl { position: absolute; font-size: 12px; color: var(--muted); pointer-events: none; }
+  .lbl.t { top: 7%; left: 50%; transform: translateX(-50%); } .lbl.b { bottom: 7%; left: 50%; transform: translateX(-50%); }
+  .lbl.l { left: 6%; top: 50%; transform: translateY(-50%); } .lbl.r { right: 6%; top: 50%; transform: translateY(-50%); }
+  .knob { position: absolute; left: 50%; top: 50%; width: 28%; aspect-ratio: 1; border-radius: 50%; background: #3f4348;
+    border: 2px solid #202326; transform: translate(-50%, -50%); pointer-events: none; z-index: 2; }
+  .pad:not(.active) .knob { transition: transform .12s ease-out; }
+
+  .center { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  @media (orientation: portrait) { .center { flex-direction: row; } .center .rd { flex: 1; } }
+  #btnStop { flex: 1; min-height: 70px; background: var(--stop); color: #fff; border: 1px solid #8e1b1b; border-radius: 3px;
+    font: 700 20px system-ui, Arial, sans-serif; touch-action: none; cursor: pointer; }
+  #btnStop:active { background: #9c1f1f; }
+  .rd { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; line-height: 1.5; }
+
+  .armbtns { flex: 1; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  .armbtn { flex: 1; font-size: 18px; touch-action: none; }
+  .armbtn.on { background: #1f5fa8; color: #fff; border-color: #174a85; }
+
+  #msg { flex: none; font-size: 12px; color: var(--muted); padding: 2px 12px max(6px, env(safe-area-inset-bottom)); min-height: 1.9em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #msg.bad { color: var(--bad); }
+
+  /* Ajustes */
+  #ajustes { position: fixed; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 10; }
+  #ajustes.open { display: flex; }
+  #ajustes .head { flex: none; background: var(--bar); color: #fff; padding: max(8px, env(safe-area-inset-top)) 12px 8px; font-weight: 600; display: flex; align-items: center; justify-content: space-between; }
+  #ajustes .body { flex: 1; overflow-y: auto; touch-action: pan-y; padding: 10px max(12px, env(safe-area-inset-right)) 16px max(12px, env(safe-area-inset-left)); }
+  .sec { background: var(--panel); border: 1px solid var(--line); border-radius: 3px; margin-bottom: 10px; }
+  .sec h3 { margin: 0; padding: 8px 10px; font-size: 13px; background: #efefef; border-bottom: 1px solid var(--line); }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 10px; border-bottom: 1px solid #e2e2e2; font-size: 14px; }
+  .row:last-child { border-bottom: 0; }
+  .row .ctl { display: flex; align-items: center; gap: 10px; }
+  select, input[type=text] { font: inherit; padding: 5px 6px; border: 1px solid #8c8c8c; border-radius: 3px; background: #fff; color: var(--text); }
+  input[type=text] { width: 150px; -webkit-user-select: text; user-select: text; }
+  input[type=range] { width: 140px; touch-action: pan-x; }
+  input[type=checkbox] { width: 20px; height: 20px; }
+  .hint { font-size: 12px; color: var(--muted); padding: 8px 10px; line-height: 1.45; }
+  #log { white-space: pre-wrap; font: 11px ui-monospace, Menlo, Consolas, monospace; max-height: 160px; overflow: auto; color: var(--muted);
+    padding: 8px 10px; -webkit-user-select: text; user-select: text; touch-action: pan-y; }
+  details summary { padding: 9px 10px; font-size: 14px; cursor: pointer; }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <span class="title">Mando SPIKE</span>
+  <span id="estado" class="bad">Desconectado</span>
+  <button class="btn" id="btnConnect">Conectar</button>
+  <button class="btn" id="btnSettings">Ajustes</button>
+</div>
+<div id="aviso"></div>
+<div class="info" id="info">Sin conexión</div>
+
+<div class="stage">
+  <div class="box">
+    <h2>Ruedas</h2>
+    <div class="padwrap">
+      <div class="pad" id="pad">
+        <span class="lbl t">Adelante</span><span class="lbl b">Atrás</span>
+        <span class="lbl l">Izq.</span><span class="lbl r">Der.</span>
+        <div class="knob" id="knob"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="center">
+    <button id="btnStop">PARAR</button>
+    <div class="rd" id="readout"></div>
+  </div>
+
+  <div class="box">
+    <h2>Brazo</h2>
+    <div class="armbtns">
+      <button class="btn armbtn" id="armUp" data-dir="1">Subir brazo</button>
+      <button class="btn armbtn" id="armDown" data-dir="-1">Bajar brazo</button>
+    </div>
+  </div>
+</div>
+<div id="msg"></div>
+
+<div id="ajustes">
+  <div class="head"><span>Ajustes</span><button class="btn" id="closeSettings">Cerrar</button></div>
+  <div class="body">
+    <div class="sec">
+      <h3>Motores</h3>
+      <div class="row"><span>Rueda izquierda</span><span class="ctl">
+        <select id="portLeft"></select><label><input type="checkbox" id="invLeft"> Invertir</label><button class="btn" data-test="left">Probar</button></span></div>
+      <div class="row"><span>Rueda derecha</span><span class="ctl">
+        <select id="portRight"></select><label><input type="checkbox" id="invRight"> Invertir</label><button class="btn" data-test="right">Probar</button></span></div>
+      <div class="row"><span>Brazo</span><span class="ctl">
+        <select id="portArm"></select><label><input type="checkbox" id="invArm"> Invertir</label><button class="btn" data-test="arm">Probar</button></span></div>
+      <div class="hint">«Probar» mueve ese motor 0,7 s al 40 %. Una rueda debe ir hacia <b>adelante</b> y el brazo debe <b>subir</b>.
+        Si va al revés, marca «Invertir». Haz la prueba con el robot en alto, con las ruedas sin tocar el suelo.</div>
+    </div>
+
+    <div class="sec">
+      <h3>Velocidad</h3>
+      <div class="row"><span>Máxima de las ruedas <b id="vDrive"></b></span><input type="range" id="maxDrive" min="10" max="100" step="5"></div>
+      <div class="row"><span>Máxima del brazo <b id="vArm"></b></span><input type="range" id="maxArm" min="10" max="100" step="5"></div>
+    </div>
+
+    <div class="sec">
+      <h3>Seguridad</h3>
+      <div class="row"><span>Parar solo si se pierde la conexión</span><select id="lease"></select></div>
+      <div class="row"><span>Mantener el brazo en su sitio al soltar</span><input type="checkbox" id="armHold"></div>
+      <div class="hint">El hub no avisa cuando se corta el Bluetooth, así que cada orden de movimiento lleva un temporizador: si el celular
+        no la renueva a tiempo, los motores se paran solos. Con un tiempo más largo hay menos microcortes pero el robot tarda más en parar si se pierde la señal.</div>
+    </div>
+
+    <div class="sec">
+      <h3>Conexión</h3>
+      <div class="row"><span>Mostrar solo el hub llamado</span><input type="text" id="hubName" maxlength="30" placeholder="(todos)" autocomplete="off"></div>
+      <div class="row"><span>Mostrar todos los dispositivos Bluetooth</span><input type="checkbox" id="showAll"></div>
+      <div class="row"><span>Ranuras del hub que se usan</span><select id="slotBase"></select></div>
+      <div class="row"><span>Modo rápido</span><input type="checkbox" id="fast"></div>
+      <div class="hint">Cada movimiento sube un mini-programa a una ranura del hub y lo ejecuta; se alternan dos ranuras para que el robot siga
+        moviéndose mientras se sube el siguiente. Cambia el par de ranuras si usas esas posiciones para tus propios programas.
+        Si el robot deja de obedecer, desactiva «Modo rápido».</div>
+    </div>
+
+    <div class="sec">
+      <details><summary>Registro técnico</summary><div id="log"></div></details>
+    </div>
+  </div>
+</div>
+
+<script>
+/* PROTOCOL_START */
+const SERVICE = "0000fd02-0000-1000-8000-00805f9b34fb";
+const RX_CHAR = "0000fd02-0001-1000-8000-00805f9b34fb"; // escribir al hub
+const TX_CHAR = "0000fd02-0002-1000-8000-00805f9b34fb"; // notificaciones del hub
+
+// COBS con variante LEGO (delimitadores 0x00,0x01,0x02; bloque max 84; XOR 0x03; fin 0x02)
+function cobsEncode(data) {
+  const out = [];
+  let codeIndex = 0, block = 0;
+  const begin = () => { codeIndex = out.length; out.push(0xFF); block = 1; };
+  begin();
+  for (const b of data) {
+    if (b > 2) { out.push(b); block++; }
+    if (b <= 2 || block > 84) {
+      if (b <= 2) out[codeIndex] = b * 84 + block + 2;
+      begin();
+    }
+  }
+  out[codeIndex] = block + 2;
+  return out;
+}
+function cobsDecode(data) {
+  const out = [];
+  const unescape = (code) => {
+    if (code === 0xFF) return [null, 85];
+    let v = Math.floor((code - 2) / 84), blk = (code - 2) % 84;
+    if (blk === 0) { blk = 84; v -= 1; }
+    return [v, blk];
+  };
+  let [value, block] = unescape(data[0]);
+  for (let i = 1; i < data.length; i++) {
+    block--;
+    if (block > 0) { out.push(data[i]); continue; }
+    if (value !== null) out.push(value);
+    [value, block] = unescape(data[i]);
+  }
+  return out;
+}
+function pack(payload) {
+  const enc = cobsEncode(payload).map(b => b ^ 3);
+  enc.push(0x02);
+  return new Uint8Array(enc);
+}
+function unpack(frame) {
+  let start = 0;
+  if (frame[0] === 0x01) start = 1;
+  const body = Array.from(frame.slice(start, frame.length - 1)).map(b => b ^ 3);
+  return new Uint8Array(cobsDecode(body));
+}
+
+// CRC32 igual a zlib.crc32 con semilla y relleno a múltiplo de 4
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(bytes, seed = 0) {
+  const pad = (4 - (bytes.length % 4)) % 4;
+  let c = (seed ^ 0xFFFFFFFF) >>> 0;
+  const step = (b) => { c = CRC_TABLE[(c ^ b) & 0xFF] ^ (c >>> 8); };
+  for (const b of bytes) step(b);
+  for (let i = 0; i < pad; i++) step(0);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+// Constructores de mensajes (little-endian)
+const u16 = v => [v & 0xFF, (v >> 8) & 0xFF];
+const u32 = v => [v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF];
+const MSG = {
+  info: () => [0x00],
+  deviceNotif: ms => [0x28, ...u16(ms)],
+  clearSlot: slot => [0x46, slot],
+  startUpload: (name, slot, crc) => [0x0C, ...new TextEncoder().encode(name), 0, slot, ...u32(crc)],
+  chunk: (runningCrc, payload) => [0x10, ...u32(runningCrc), ...u16(payload.length), ...payload],
+  programFlow: (stop, slot) => [0x1E, stop ? 1 : 0, slot],
+};
+/* PROTOCOL_END */
+
+/* ================= CONFIGURACIÓN ================= */
+const PORTS = ["A", "B", "C", "D", "E", "F"];
+const MOTOR_TYPES = { 0x30: ["mediano", 1110], 0x31: ["grande", 1050], 0x41: ["pequeño", 660] };
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+const cfg = {
+  portLeft: "A", portRight: "E", portArm: "D",
+  invLeft: true, invRight: false, invArm: false,
+  maxDrive: 50, maxArm: 50,
+  lease: 1500, armHold: true, fast: true, slotBase: 18,
+  hubName: "", showAll: false,
+};
+try { Object.assign(cfg, JSON.parse(localStorage.getItem("spikeMando5") || "{}")); } catch (e) {}
+const saveCfg = () => { try { localStorage.setItem("spikeMando5", JSON.stringify(cfg)); } catch (e) {} };
+
+function fillSelect(sel, opts, value) {
+  for (const [v, t] of opts) { const o = document.createElement("option"); o.value = v; o.textContent = t; sel.appendChild(o); }
+  sel.value = value;
+}
+const portOpts = PORTS.map(p => [p, "Puerto " + p]);
+for (const k of ["portLeft", "portRight", "portArm"]) fillSelect($(k), portOpts, cfg[k]);
+fillSelect($("lease"), [[1500, "1,5 s (recomendado)"], [3000, "3 s"], [0, "Desactivada (no recomendado)"]], cfg.lease);
+fillSelect($("slotBase"), Array.from({ length: 10 }, (_, i) => [i * 2, (i * 2) + " y " + (i * 2 + 1)]), cfg.slotBase);
+for (const k of ["invLeft", "invRight", "invArm", "armHold", "fast", "showAll"]) $(k).checked = cfg[k];
+for (const k of ["maxDrive", "maxArm"]) $(k).value = cfg[k];
+$("hubName").value = cfg.hubName;
+const showVals = () => { $("vDrive").textContent = cfg.maxDrive + " %"; $("vArm").textContent = cfg.maxArm + " %"; };
+showVals();
+
+for (const k of ["portLeft", "portRight", "portArm"]) $(k).addEventListener("change", e => { cfg[k] = e.target.value; saveCfg(); refreshInfo(); recompute(); });
+for (const k of ["lease", "slotBase"]) $(k).addEventListener("change", e => { cfg[k] = +e.target.value; saveCfg(); state.sentKey = null; recompute(); });
+for (const k of ["invLeft", "invRight", "invArm", "armHold", "fast", "showAll"]) $(k).addEventListener("change", e => { cfg[k] = e.target.checked; saveCfg(); state.sentKey = null; recompute(); });
+for (const k of ["maxDrive", "maxArm"]) $(k).addEventListener("input", e => { cfg[k] = +e.target.value; showVals(); saveCfg(); recompute(); });
+$("hubName").addEventListener("input", e => { cfg.hubName = e.target.value; saveCfg(); });
+$("btnSettings").addEventListener("click", () => $("ajustes").classList.add("open"));
+$("closeSettings").addEventListener("click", () => $("ajustes").classList.remove("open"));
+document.addEventListener("contextmenu", e => e.preventDefault());
+
+/* ================= ESTADO ================= */
+const state = {
+  device: null, rx: null, info: null, rxBuf: [], waiters: [], wq: Promise.resolve(),
+  target: { A: 0, B: 0, C: 0, D: 0, E: 0, F: 0 },    // -100..100 por puerto (ya con la inversión aplicada)
+  motors: {}, motorsKnown: false, battery: null, lastMs: null,
+  sentKey: null, sending: false, fails: 0, running: null,
+  joy: { x: 0, y: 0 }, arm: 0, test: null,
+  needStop: false, renewTimer: null, testTimer: null, sendTimer: null,
+};
+const connected = () => !!(state.device && state.device.gatt && state.device.gatt.connected && state.rx);
+const slotPair = () => [cfg.slotBase, cfg.slotBase + 1];
+
+function log(text) {
+  const el = $("log");
+  el.textContent = (new Date().toLocaleTimeString() + "  " + text + "\n" + el.textContent).slice(0, 6000);
+}
+function msg(text, bad) { const el = $("msg"); el.textContent = text || ""; el.className = bad ? "bad" : ""; }
+function setEstado(text, cls) { const el = $("estado"); el.textContent = text; el.className = cls || ""; }
+function refreshInfo() {
+  if (!connected()) { $("info").textContent = "Sin conexión"; return; }
+  const parts = [];
+  if (state.battery !== null) parts.push("Batería " + state.battery + " %");
+  const found = Object.keys(state.motors).sort();
+  if (state.motorsKnown) {
+    parts.push("Motores: " + (found.join(", ") || "ninguno"));
+    const missing = [cfg.portLeft, cfg.portRight, cfg.portArm].filter(p => !state.motors[p]);
+    if (missing.length) parts.push("¡falta motor en " + [...new Set(missing)].join(", ") + "!");
+  }
+  if (state.lastMs !== null) parts.push("último envío " + state.lastMs + " ms");
+  $("info").textContent = parts.join("  ·  ");
+}
+
+/* ================= OBJETIVO DE LOS MOTORES ================= */
+const moving = t => Object.values(t).some(v => v !== 0);
+function computeTarget() {
+  const t = { A: 0, B: 0, C: 0, D: 0, E: 0, F: 0 };
+  if (state.test) { t[state.test.port] = state.test.pct; return t; }
+  const { x, y } = state.joy;
+  let l = y + x, r = y - x;                                  // mezcla tipo tanque: Y avanza, X gira
+  const m = Math.max(1, Math.abs(l), Math.abs(r));
+  const level = v => Math.round(v / m * 4) / 4;              // 5 niveles: 0, 25, 50, 75, 100 % de la velocidad máxima
+  l = Math.round(level(l) * cfg.maxDrive) + 0; r = Math.round(level(r) * cfg.maxDrive) + 0;
+  t[cfg.portLeft] = cfg.invLeft ? -l : l;
+  t[cfg.portRight] = cfg.invRight ? -r : r;
+  if (cfg.portArm !== cfg.portLeft && cfg.portArm !== cfg.portRight) t[cfg.portArm] = state.arm * cfg.maxArm * (cfg.invArm ? -1 : 1);
+  for (const p of PORTS) t[p] = t[p] + 0;                    // evita -0
+  return t;
+}
+function recompute(send = true) {
+  state.target = computeTarget();
+  const t = state.target;
+  const dir = state.arm > 0 ? "sube" : state.arm < 0 ? "baja" : "parado";
+  $("readout").innerHTML = "Izq. (" + cfg.portLeft + "): " + t[cfg.portLeft] + " %<br>Der. (" + cfg.portRight + "): " + t[cfg.portRight] +
+    " %<br>Brazo (" + cfg.portArm + "): " + dir;
+  if (send) scheduleSend();
+}
+
+/* ================= JOYSTICK ================= */
+const joy = { pid: null, locked: false };
+const pad = $("pad"), knob = $("knob");
+const setKnob = (dx, dy) => { knob.style.transform = "translate(calc(-50% + " + dx + "px), calc(-50% + " + dy + "px))"; };
+function padMove(e) {
+  if (joy.locked) return;
+  const r = pad.getBoundingClientRect();
+  const R = r.width * 0.36;
+  let dx = e.clientX - (r.left + r.width / 2), dy = e.clientY - (r.top + r.height / 2);
+  const d = Math.hypot(dx, dy);
+  if (d > R) { dx *= R / d; dy *= R / d; }
+  setKnob(dx, dy);
+  let x = dx / R, y = -dy / R;
+  if (Math.abs(x) < 0.12) x = 0;                             // zona muerta
+  if (Math.abs(y) < 0.12) y = 0;
+  state.joy = { x, y };
+  recompute();
+}
+function padEnd(e) {
+  if (e.pointerId !== joy.pid) return;
+  joy.pid = null; joy.locked = false;
+  pad.classList.remove("active");
+  setKnob(0, 0);
+  state.joy = { x: 0, y: 0 };
+  recompute();
+}
+pad.addEventListener("pointerdown", e => {
+  if (joy.pid !== null) return;
+  e.preventDefault();
+  joy.pid = e.pointerId; joy.locked = false;
+  try { pad.setPointerCapture(e.pointerId); } catch (_) {}
+  pad.classList.add("active");
+  padMove(e);
+});
+pad.addEventListener("pointermove", e => { if (e.pointerId === joy.pid) padMove(e); });
+for (const t of ["pointerup", "pointercancel", "lostpointercapture"]) pad.addEventListener(t, padEnd);
+
+/* ================= BRAZO (mantener pulsado) ================= */
+let armHeld = 0;
+for (const b of document.querySelectorAll(".armbtn")) {
+  const dir = +b.dataset.dir;
+  b.addEventListener("pointerdown", e => {
+    e.preventDefault();
+    try { b.setPointerCapture(e.pointerId); } catch (_) {}
+    b.classList.add("on"); armHeld = dir; state.arm = dir; recompute();
+  });
+  const off = () => { if (!b.classList.contains("on")) return; b.classList.remove("on"); if (armHeld === dir) { armHeld = 0; state.arm = 0; recompute(); } };
+  b.addEventListener("pointerup", off);
+  b.addEventListener("pointercancel", off);
+  b.addEventListener("lostpointercapture", off);
+}
+
+/* ================= TECLADO (solo para probar desde un PC) ================= */
+const kb = { f: 0, b: 0, l: 0, r: 0, u: 0, d: 0 };
+const KEYMAP = { ArrowUp: "f", w: "f", ArrowDown: "b", s: "b", ArrowLeft: "l", a: "l", ArrowRight: "r", d: "r", q: "u", e: "d" };
+const keyOf = e => KEYMAP[e.key.length === 1 ? e.key.toLowerCase() : e.key];
+function applyKeys() {
+  if (joy.pid === null) {
+    state.joy = { x: kb.r - kb.l, y: kb.f - kb.b };
+    const R = pad.clientWidth * 0.36;
+    setKnob(state.joy.x * R, -state.joy.y * R);
+  }
+  if (armHeld === 0) state.arm = kb.u - kb.d;
+  recompute();
+}
+addEventListener("keydown", e => {
+  if (e.repeat || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return;
+  if (e.code === "Space") { e.preventDefault(); stopAll(); return; }
+  const k = keyOf(e); if (k) { e.preventDefault(); kb[k] = 1; applyKeys(); }
+});
+addEventListener("keyup", e => { const k = keyOf(e); if (k) { kb[k] = 0; applyKeys(); } });
+
+/* ================= PARAR ================= */
+$("btnStop").addEventListener("pointerdown", e => { e.preventDefault(); stopAll(); });
+function stopAll() {
+  state.joy = { x: 0, y: 0 }; state.arm = 0; armHeld = 0;
+  for (const k of Object.keys(kb)) kb[k] = 0;
+  if (state.test) { clearTimeout(state.testTimer); state.test = null; }
+  setKnob(0, 0);
+  if (joy.pid !== null) joy.locked = true;                   // el dedo sigue apoyado: se ignora hasta que lo levantes
+  for (const b of document.querySelectorAll(".armbtn")) b.classList.remove("on");
+  recompute(false);
+  if (connected()) fastStop();                                // corte inmediato, sin esperar a subir nada
+  scheduleSend();
+}
+// Para ya el programa en marcha: un mensaje por ranura, sin esperar respuesta. Se paran las dos ranuras
+// para cubrir también un programa que esté arrancando justo ahora.
+function fastStop() {
+  for (const s of slotPair()) notify(MSG.programFlow(true, s), 0x1F);
+}
+addEventListener("pagehide", stopAll);
+addEventListener("blur", stopAll);
+document.addEventListener("visibilitychange", () => { if (document.hidden) stopAll(); });
+
+/* ================= PRUEBA DE MOTORES ================= */
+const TEST_MS = 700;
+for (const b of document.querySelectorAll("[data-test]")) {
+  b.addEventListener("click", () => {
+    if (!connected()) { msg("Conecta el hub antes de probar los motores.", true); return; }
+    const role = b.dataset.test;
+    const port = role === "left" ? cfg.portLeft : role === "right" ? cfg.portRight : cfg.portArm;
+    const inv = role === "left" ? cfg.invLeft : role === "right" ? cfg.invRight : cfg.invArm;
+    stopAll();
+    state.test = { port, pct: inv ? -40 : 40 };
+    recompute();
+    clearTimeout(state.testTimer);
+    state.testTimer = setTimeout(() => { state.test = null; recompute(); }, TEST_MS);
+    msg("Probando el motor del puerto " + port + "…");
+  });
+}
+
+/* ================= BLUETOOTH ================= */
+function checkSupport() {
+  const w = $("aviso");
+  let text = "";
+  if (!navigator.bluetooth) {
+    text = /iPhone|iPad|iPod/.test(navigator.userAgent)
+      ? "En iPhone/iPad abre esta página dentro de la aplicación gratuita Bluefy: Safari y Chrome no permiten Bluetooth web."
+      : "Este navegador no permite Bluetooth web. Usa Chrome en Android o en PC.";
+  } else if (!window.isSecureContext) {
+    text = "El Bluetooth web solo funciona en páginas https://. Abre esta página desde una dirección https.";
+  }
+  w.textContent = text; w.style.display = text ? "block" : "none";
+  return !text;
+}
+
+async function connect() {
+  if (!checkSupport()) return;
+  try {
+    setEstado("Buscando hub…", "warn");
+    const name = cfg.hubName.trim();
+    const opts = cfg.showAll ? { acceptAllDevices: true, optionalServices: [SERVICE] }
+      : name ? { filters: [{ name }], optionalServices: [SERVICE] }
+      : { filters: [{ services: [SERVICE] }], optionalServices: [SERVICE] };
+    const device = await navigator.bluetooth.requestDevice(opts);
+    state.device = device;
+    device.addEventListener("gattserverdisconnected", onDisconnected);
+    setEstado("Conectando…", "warn");
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SERVICE);
+    state.rx = await svc.getCharacteristic(RX_CHAR);
+    const tx = await svc.getCharacteristic(TX_CHAR);
+    tx.addEventListener("characteristicvaluechanged", e => onData(new Uint8Array(e.target.value.buffer, e.target.value.byteOffset, e.target.value.byteLength)));
+    await tx.startNotifications();
+    const info = await request(MSG.info(), 0x01);
+    const dv = new DataView(info.buffer, info.byteOffset);
+    state.info = { fw: info[5] + "." + info[6] + "." + dv.getUint16(7, true), maxPacket: dv.getUint16(9, true), maxChunk: dv.getUint16(13, true) };
+    log("Info: " + JSON.stringify(state.info));
+    await request(MSG.deviceNotif(300), 0x29);
+    state.sentKey = null; state.running = null; state.fails = 0; state.needStop = false;
+    $("btnConnect").textContent = "Desconectar";
+    setEstado("Conectado a " + (device.name || "hub"), "ok");
+    msg("");
+    refreshInfo();
+    recompute();                                              // deja el robot en estado de reposo
+  } catch (err) {
+    log("Error de conexión: " + err);
+    setEstado(err.name === "NotFoundError" ? "No se eligió ningún hub" : "Error: " + err.message, "bad");
+    try { if (state.device && state.device.gatt.connected) state.device.gatt.disconnect(); } catch (_) {}
+    state.device = null; state.rx = null;
+    $("btnConnect").textContent = "Conectar";
+  }
+}
+async function disconnect() {
+  stopAll();
+  const t0 = Date.now();                                      // espera a que el hub reciba la orden de reposo
+  while (connected() && (state.sending || JSON.stringify(state.target) !== state.sentKey) && Date.now() - t0 < 2500) await sleep(50);
+  try { if (state.device && state.device.gatt) state.device.gatt.disconnect(); } catch (_) {}
+  onDisconnected();
+}
+function onDisconnected() {
+  clearTimeout(state.renewTimer); clearTimeout(state.sendTimer);
+  setEstado("Desconectado", "bad"); $("btnConnect").textContent = "Conectar";
+  for (const w of state.waiters) { clearTimeout(w.timer); if (!w.ignore) w.reject(new Error("desconectado")); }
+  state.waiters = []; state.sending = false; state.motors = {}; state.motorsKnown = false; state.battery = null;
+  state.running = null; state.sentKey = null; state.rx = null; state.wq = Promise.resolve();
+  refreshInfo();
+}
+$("btnConnect").addEventListener("click", () => (connected() ? disconnect() : connect()));
+
+// Las escrituras se encolan: Web Bluetooth no admite dos operaciones GATT a la vez.
+function writeRaw(bytes) {
+  const job = async () => {
+    const size = state.info ? state.info.maxPacket : bytes.length;
+    for (let i = 0; i < bytes.length; i += size) {
+      const part = bytes.slice(i, i + size);
+      if (state.rx.writeValueWithoutResponse) await state.rx.writeValueWithoutResponse(part);
+      else await state.rx.writeValue(part);
+    }
+  };
+  const p = state.wq.then(job, job);
+  state.wq = p.catch(() => {});
+  return p;
+}
+// Los mensajes del hub no llevan identificador de petición: la respuesta N corresponde a la petición N.
+// Por eso las esperas van en una cola en orden de escritura; las órdenes "sin espera" (parada) también ocupan su turno.
+function dropWaiter(w) { const i = state.waiters.indexOf(w); if (i >= 0) state.waiters.splice(i, 1); }
+function request(payload, responseId, timeout = 4000) {
+  return new Promise((resolve, reject) => {
+    const w = { id: responseId, resolve, reject };
+    w.timer = setTimeout(() => { dropWaiter(w); reject(new Error("sin respuesta 0x" + responseId.toString(16))); }, timeout);
+    state.waiters.push(w);
+    writeRaw(pack(payload)).catch(e => { clearTimeout(w.timer); dropWaiter(w); reject(e); });
+  });
+}
+function notify(payload, responseId) {
+  const w = { id: responseId, ignore: true };
+  w.timer = setTimeout(() => dropWaiter(w), 2000);
+  state.waiters.push(w);
+  return writeRaw(pack(payload)).catch(() => { clearTimeout(w.timer); dropWaiter(w); });
+}
+function onData(chunk) {
+  for (const b of chunk) {
+    if (b === 0x02) {
+      if (state.rxBuf.length) { try { handleMessage(unpack(new Uint8Array([...state.rxBuf, 0x02]))); } catch (e) { log("Trama inválida: " + e); } }
+      state.rxBuf = [];
+    } else state.rxBuf.push(b);
+  }
+}
+function handleMessage(m) {
+  const i = state.waiters.findIndex(w => w.id === m[0]);
+  if (i >= 0) { const w = state.waiters.splice(i, 1)[0]; clearTimeout(w.timer); if (!w.ignore) w.resolve(m); }
+  if (m[0] === 0x3C) parseDevices(m);
+  else if (m[0] === 0x21) log("Hub: " + new TextDecoder().decode(m.slice(1)).replace(/\0.*$/s, ""));
+}
+function parseDevices(m) {
+  const dv = new DataView(m.buffer, m.byteOffset);
+  const size = dv.getUint16(1, true);
+  const sizes = { 0x00: 2, 0x01: 21, 0x02: 26, 0x0A: 12, 0x0B: 4, 0x0C: 9, 0x0D: 4, 0x0E: 11 };
+  const motors = {};
+  let i = 3;
+  while (i < 3 + size && i < m.length && m[i] in sizes) {
+    const t = m[i];
+    if (t === 0x00) state.battery = m[i + 1];
+    if (t === 0x0A && PORTS[m[i + 1]]) motors[PORTS[m[i + 1]]] = { type: m[i + 2], pos: dv.getInt32(i + 8, true) };
+    i += sizes[t];
+  }
+  const changed = Object.keys(motors).sort().join() !== Object.keys(state.motors).sort().join() || !state.motorsKnown;
+  state.motors = motors; state.motorsKnown = true;
+  if (changed) { log("Motores detectados: " + (Object.keys(motors).join(", ") || "ninguno")); recompute(); }
+  refreshInfo();
+}
+
+/* ================= ENVÍO ================= */
+// El firmware oficial no acepta órdenes sueltas a los motores: cada cambio genera un mini-programa
+// Python que se sube a una ranura del hub y se ejecuta. Solo se envía el estado más reciente.
+// Si el estado es de movimiento, el programa se detiene solo pasado el tiempo de seguridad ("lease");
+// mientras el celular siga conectado, lo renueva antes de que venza.
+function leaseFor(target) {
+  if (state.test) return TEST_MS + 100;
+  return moving(target) ? cfg.lease : 0;
+}
+function buildProgram(target, lease) {
+  const used = [...new Set([cfg.portLeft, cfg.portRight, cfg.portArm])];
+  const hold = q => q === cfg.portArm && cfg.armHold;
+  const stopCall = q => "s(p." + q + (hold(q) ? ",1" : "") + ")";
+  const L = ["import motor as m,runloop", "from hub import port as p",
+    "def r(x,v):", " try:m.run(x,v,acceleration=5000)", " except:", "  try:m.run(x,v)", "  except:pass",
+    "def s(x,h=0):", " try:m.stop(x,stop=m.HOLD) if h else m.stop(x)", " except:", "  try:m.stop(x)", "  except:pass"];
+  for (const q of used) {
+    const pct = target[q];
+    const max = (MOTOR_TYPES[state.motors[q] && state.motors[q].type] || [0, 1000])[1];
+    L.push(pct !== 0 ? "r(p." + q + "," + Math.round(pct * max / 100) + ")" : stopCall(q));
+  }
+  L.push("async def w():");
+  if (lease > 0) { L.push(" await runloop.sleep_ms(" + lease + ")"); for (const q of used) L.push(" " + stopCall(q)); }
+  L.push(" while 1:await runloop.sleep_ms(1000)", "runloop.run(w())");
+  return new TextEncoder().encode(L.join("\n"));
+}
+
+function scheduleSend() { clearTimeout(state.sendTimer); state.sendTimer = setTimeout(pump, 0); }
+async function pump() {
+  if (state.sending || !connected() || !state.info) return;
+  const target = { ...state.target };
+  const key = JSON.stringify(target);
+  if (key === state.sentKey) return;
+  state.sending = true;
+  const t0 = performance.now();
+  let started = false;
+  try {
+    started = await sendState(target, key);
+    if (started) {
+      state.sentKey = key; state.fails = 0;
+      state.lastMs = Math.round(performance.now() - t0); refreshInfo();
+      clearTimeout(state.renewTimer);
+      if (moving(target) && cfg.lease && !state.test) {
+        state.renewTimer = setTimeout(() => { state.sentKey = null; scheduleSend(); }, Math.round(cfg.lease * 0.45));
+      }
+    }
+  } catch (e) {
+    state.fails++;
+    log("Error al enviar: " + e.message); msg("Error al enviar: " + e.message, true);
+  } finally {
+    state.sending = false;
+    if (connected() && JSON.stringify(state.target) !== state.sentKey) {
+      if (state.fails === 0) setTimeout(pump, 0);
+      else if (state.fails < 4) setTimeout(pump, 400);
+      else { msg("El hub no responde. Revisa la conexión y mueve el joystick para reintentar.", true); state.fails = 0; }
+    }
+  }
+}
+
+async function stopRunning() {                               // peticiones una detrás de otra: comparten el mismo tipo de respuesta
+  const slots = state.running !== null ? [state.running] : slotPair();
+  for (const s of slots) await request(MSG.programFlow(true, s), 0x1F, 1500).catch(() => {});
+  state.running = null;
+}
+async function upload(program, slot) {
+  const up = await request(MSG.startUpload("program.py", slot, crc32(program)), 0x0D);
+  if (up[1] !== 0) return false;
+  const size = Math.max(4, state.info.maxChunk - (state.info.maxChunk % 4));
+  let running = 0;
+  for (let i = 0; i < program.length; i += size) {
+    const part = program.slice(i, i + size);
+    running = crc32(part, running);
+    const r = await request(MSG.chunk(running, Array.from(part)), 0x11);
+    if (r[1] !== 0) throw new Error("fallo al transferir");
+  }
+  return true;
+}
+// Devuelve true si el programa llegó a arrancar.
+async function sendState(target, key) {
+  if (!moving(target)) fastStop();                            // en reposo, primero se corta lo que esté en marcha
+  const [a, b] = slotPair();
+  const slot = state.running === a ? b : a;                   // se sube a la ranura libre; el programa actual sigue mientras tanto
+  const program = buildProgram(target, leaseFor(target));
+  // Si mientras se subía un programa de movimiento ya pediste parar, no se arranca. Si solo cambió la velocidad
+  // o la dirección, se arranca igualmente (el estado nuevo se envía justo después): así no hay que esperar a que el joystick se quede quieto.
+  const stale = () => moving(target) && !moving(state.target);
+
+  let ok = await upload(program, slot);
+  if (!ok) { await request(MSG.clearSlot(slot), 0x47, 1500).catch(() => {}); ok = await upload(program, slot); }
+  if (!ok) { await stopRunning(); ok = await upload(program, slot); }
+  if (!ok) throw new Error("el hub rechazó la subida");
+  if (stale()) return false;                                  // cambió mientras se subía: no arrancar un estado viejo
+
+  if (!cfg.fast || state.needStop) await stopRunning();
+  let st = await request(MSG.programFlow(false, slot), 0x1F);
+  if (st[1] !== 0) {
+    state.needStop = true; log("El hub pide detener el programa anterior antes de iniciar el nuevo; se ajusta.");
+    await stopRunning();
+    st = await request(MSG.programFlow(false, slot), 0x1F);
+  }
+  if (st[1] !== 0) throw new Error("el hub no inició el programa");
+  state.running = slot;
+  msg("");
+  return true;
+}
+
+checkSupport();
+recompute(false);
+refreshInfo();
+</script>
+</body>
+</html>
