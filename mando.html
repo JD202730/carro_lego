@@ -162,10 +162,11 @@
       <h3>Conexión</h3>
       <div class="row"><span>Mostrar solo el hub llamado</span><input type="text" id="hubName" maxlength="30" placeholder="(todos)" autocomplete="off"></div>
       <div class="row"><span>Mostrar todos los dispositivos Bluetooth</span><input type="checkbox" id="showAll"></div>
-      <div class="row"><span>Ranuras del hub que se usan</span><select id="slotBase"></select></div>
+      <div class="row"><span>Ranuras del hub que se usan</span><select id="slots"></select></div>
       <div class="row"><span>Modo rápido</span><input type="checkbox" id="fast"></div>
-      <div class="hint">Cada movimiento sube un mini-programa a una ranura del hub y lo ejecuta; se alternan dos ranuras para que el robot siga
-        moviéndose mientras se sube el siguiente. Cambia el par de ranuras si usas esas posiciones para tus propios programas.
+      <div class="hint">Cada movimiento es un mini-programa que se ejecuta en una ranura del hub. Con 10 ranuras, el mando <b>precarga</b> los más usados
+        (reposo, adelante, atrás, giros y brazo) al conectar y después solo tiene que arrancarlos, que es mucho más rápido que subirlos cada vez.
+        <b>Esas ranuras del hub se sobrescriben</b>: si guardas tus propios programas en ellas, elige menos ranuras.
         Si el robot deja de obedecer, desactiva «Modo rápido».</div>
     </div>
 
@@ -268,7 +269,7 @@ const cfg = {
   portLeft: "A", portRight: "E", portArm: "D",
   invLeft: true, invRight: false, invArm: false,
   maxDrive: 50, maxArm: 50,
-  lease: 1500, armHold: true, fast: true, slotBase: 18,
+  lease: 1500, armHold: true, fast: true, slots: 10,
   hubName: "", showAll: false,
 };
 try { Object.assign(cfg, JSON.parse(localStorage.getItem("spikeMando5") || "{}")); } catch (e) {}
@@ -281,17 +282,19 @@ function fillSelect(sel, opts, value) {
 const portOpts = PORTS.map(p => [p, "Puerto " + p]);
 for (const k of ["portLeft", "portRight", "portArm"]) fillSelect($(k), portOpts, cfg[k]);
 fillSelect($("lease"), [[1500, "1,5 s (recomendado)"], [3000, "3 s"], [0, "Desactivada (no recomendado)"]], cfg.lease);
-fillSelect($("slotBase"), Array.from({ length: 10 }, (_, i) => [i * 2, (i * 2) + " y " + (i * 2 + 1)]), cfg.slotBase);
+fillSelect($("slots"), [[10, "10 ranuras (10–19), con precarga (recomendado)"], [4, "4 ranuras (16–19), sin precarga"], [2, "2 ranuras (18–19), sin precarga"]], cfg.slots);
 for (const k of ["invLeft", "invRight", "invArm", "armHold", "fast", "showAll"]) $(k).checked = cfg[k];
 for (const k of ["maxDrive", "maxArm"]) $(k).value = cfg[k];
 $("hubName").value = cfg.hubName;
 const showVals = () => { $("vDrive").textContent = cfg.maxDrive + " %"; $("vArm").textContent = cfg.maxArm + " %"; };
 showVals();
 
-for (const k of ["portLeft", "portRight", "portArm"]) $(k).addEventListener("change", e => { cfg[k] = e.target.value; saveCfg(); refreshInfo(); recompute(); });
-for (const k of ["lease", "slotBase"]) $(k).addEventListener("change", e => { cfg[k] = +e.target.value; saveCfg(); state.sentKey = null; recompute(); });
-for (const k of ["invLeft", "invRight", "invArm", "armHold", "fast", "showAll"]) $(k).addEventListener("change", e => { cfg[k] = e.target.checked; saveCfg(); state.sentKey = null; recompute(); });
-for (const k of ["maxDrive", "maxArm"]) $(k).addEventListener("input", e => { cfg[k] = +e.target.value; showVals(); saveCfg(); recompute(); });
+// Cualquier ajuste que cambie el programa generado deja inservibles los programas precargados: se vuelven a precargar.
+function settingsChanged() { saveCfg(); state.sentKey = null; recompute(); scheduleWarm(); }
+for (const k of ["portLeft", "portRight", "portArm"]) $(k).addEventListener("change", e => { cfg[k] = e.target.value; refreshInfo(); settingsChanged(); });
+for (const k of ["lease", "slots"]) $(k).addEventListener("change", e => { cfg[k] = +e.target.value; settingsChanged(); });
+for (const k of ["invLeft", "invRight", "invArm", "armHold", "fast", "showAll"]) $(k).addEventListener("change", e => { cfg[k] = e.target.checked; settingsChanged(); });
+for (const k of ["maxDrive", "maxArm"]) $(k).addEventListener("input", e => { cfg[k] = +e.target.value; showVals(); settingsChanged(); });
 $("hubName").addEventListener("input", e => { cfg.hubName = e.target.value; saveCfg(); });
 $("btnSettings").addEventListener("click", () => $("ajustes").classList.add("open"));
 $("closeSettings").addEventListener("click", () => $("ajustes").classList.remove("open"));
@@ -302,12 +305,13 @@ const state = {
   device: null, rx: null, info: null, rxBuf: [], waiters: [], wq: Promise.resolve(),
   target: { A: 0, B: 0, C: 0, D: 0, E: 0, F: 0 },    // -100..100 por puerto (ya con la inversión aplicada)
   motors: {}, motorsKnown: false, battery: null, lastMs: null,
-  sentKey: null, sending: false, fails: 0, running: null,
+  sentKey: null, sending: false, fails: 0, running: null, starting: null,
+  slotText: {}, lastUse: {}, tick: 0, warming: false, warm: null,   // lo que hay guardado en cada ranura del hub
   joy: { x: 0, y: 0 }, arm: 0, test: null,
-  needStop: false, renewTimer: null, testTimer: null, sendTimer: null,
+  needStop: false, renewTimer: null, testTimer: null, sendTimer: null, warmTimer: null,
 };
 const connected = () => !!(state.device && state.device.gatt && state.device.gatt.connected && state.rx);
-const slotPair = () => [cfg.slotBase, cfg.slotBase + 1];
+const slotPool = () => Array.from({ length: cfg.slots }, (_, i) => 20 - cfg.slots + i);   // las últimas N ranuras (0–19)
 
 function log(text) {
   const el = $("log");
@@ -326,22 +330,25 @@ function refreshInfo() {
     if (missing.length) parts.push("¡falta motor en " + [...new Set(missing)].join(", ") + "!");
   }
   if (state.lastMs !== null) parts.push("último envío " + state.lastMs + " ms");
+  if (state.warm) parts.push("precargando " + state.warm.done + "/" + state.warm.total);
   $("info").textContent = parts.join("  ·  ");
 }
 
 /* ================= OBJETIVO DE LOS MOTORES ================= */
 const moving = t => Object.values(t).some(v => v !== 0);
 function computeTarget() {
+  if (state.test) { const t = { A: 0, B: 0, C: 0, D: 0, E: 0, F: 0 }; t[state.test.port] = state.test.pct; return t; }
+  return targetFrom(state.joy.x, state.joy.y, state.arm);
+}
+function targetFrom(x, y, arm) {
   const t = { A: 0, B: 0, C: 0, D: 0, E: 0, F: 0 };
-  if (state.test) { t[state.test.port] = state.test.pct; return t; }
-  const { x, y } = state.joy;
   let l = y + x, r = y - x;                                  // mezcla tipo tanque: Y avanza, X gira
   const m = Math.max(1, Math.abs(l), Math.abs(r));
   const level = v => Math.round(v / m * 4) / 4;              // 5 niveles: 0, 25, 50, 75, 100 % de la velocidad máxima
   l = Math.round(level(l) * cfg.maxDrive) + 0; r = Math.round(level(r) * cfg.maxDrive) + 0;
   t[cfg.portLeft] = cfg.invLeft ? -l : l;
   t[cfg.portRight] = cfg.invRight ? -r : r;
-  if (cfg.portArm !== cfg.portLeft && cfg.portArm !== cfg.portRight) t[cfg.portArm] = state.arm * cfg.maxArm * (cfg.invArm ? -1 : 1);
+  if (cfg.portArm !== cfg.portLeft && cfg.portArm !== cfg.portRight) t[cfg.portArm] = arm * cfg.maxArm * (cfg.invArm ? -1 : 1);
   for (const p of PORTS) t[p] = t[p] + 0;                    // evita -0
   return t;
 }
@@ -439,10 +446,12 @@ function stopAll() {
   if (connected()) fastStop();                                // corte inmediato, sin esperar a subir nada
   scheduleSend();
 }
-// Para ya el programa en marcha: un mensaje por ranura, sin esperar respuesta. Se paran las dos ranuras
-// para cubrir también un programa que esté arrancando justo ahora.
-function fastStop() {
-  for (const s of slotPair()) notify(MSG.programFlow(true, s), 0x1F);
+// Para ya el programa en marcha, sin esperar respuesta: la ranura que corre y la que justo está arrancando.
+// Con all = true se paran todas las ranuras del mando (al conectar, por si quedó algo en marcha de otra sesión).
+function fastStop(all = false) {
+  const slots = all ? slotPool() : [...new Set([state.running, state.starting].filter(s => s !== null))];
+  for (const s of slots) notify(MSG.programFlow(true, s), 0x1F);
+  state.running = null;
 }
 addEventListener("pagehide", stopAll);
 addEventListener("blur", stopAll);
@@ -496,19 +505,24 @@ async function connect() {
     const svc = await server.getPrimaryService(SERVICE);
     state.rx = await svc.getCharacteristic(RX_CHAR);
     const tx = await svc.getCharacteristic(TX_CHAR);
-    tx.addEventListener("characteristicvaluechanged", e => onData(new Uint8Array(e.target.value.buffer, e.target.value.byteOffset, e.target.value.byteLength)));
+    state.rxBuf = [];
+    tx.removeEventListener("characteristicvaluechanged", onTx);   // un solo manejador aunque se reconecte sobre el mismo objeto
+    tx.addEventListener("characteristicvaluechanged", onTx);
     await tx.startNotifications();
-    const info = await request(MSG.info(), 0x01);
+    const info = await request(MSG.info(), 0x01, 4000);
     const dv = new DataView(info.buffer, info.byteOffset);
     state.info = { fw: info[5] + "." + info[6] + "." + dv.getUint16(7, true), maxPacket: dv.getUint16(9, true), maxChunk: dv.getUint16(13, true) };
     log("Info: " + JSON.stringify(state.info));
-    await request(MSG.deviceNotif(300), 0x29);
-    state.sentKey = null; state.running = null; state.fails = 0; state.needStop = false;
+    await request(MSG.deviceNotif(300), 0x29, 4000);
+    state.sentKey = null; state.running = null; state.starting = null; state.fails = 0; state.needStop = false;
+    state.slotText = {}; state.lastUse = {}; state.warming = false; state.warm = null;   // no se sabe qué hay en las ranuras del hub
+    fastStop(true);
     $("btnConnect").textContent = "Desconectar";
     setEstado("Conectado a " + (device.name || "hub"), "ok");
     msg("");
     refreshInfo();
     recompute();                                              // deja el robot en estado de reposo
+    scheduleWarm();                                           // precarga de los programas más usados (espera a conocer los motores)
   } catch (err) {
     log("Error de conexión: " + err);
     setEstado(err.name === "NotFoundError" ? "No se eligió ningún hub" : "Error: " + err.message, "bad");
@@ -525,7 +539,8 @@ async function disconnect() {
   onDisconnected();
 }
 function onDisconnected() {
-  clearTimeout(state.renewTimer); clearTimeout(state.sendTimer);
+  clearTimeout(state.renewTimer); clearTimeout(state.sendTimer); clearTimeout(state.warmTimer);
+  state.slotText = {}; state.lastUse = {}; state.warming = false; state.warm = null; state.starting = null;
   setEstado("Desconectado", "bad"); $("btnConnect").textContent = "Conectar";
   for (const w of state.waiters) { clearTimeout(w.timer); if (!w.ignore) w.reject(new Error("desconectado")); }
   state.waiters = []; state.sending = false; state.motors = {}; state.motorsKnown = false; state.battery = null;
@@ -551,7 +566,7 @@ function writeRaw(bytes) {
 // Los mensajes del hub no llevan identificador de petición: la respuesta N corresponde a la petición N.
 // Por eso las esperas van en una cola en orden de escritura; las órdenes "sin espera" (parada) también ocupan su turno.
 function dropWaiter(w) { const i = state.waiters.indexOf(w); if (i >= 0) state.waiters.splice(i, 1); }
-function request(payload, responseId, timeout = 4000) {
+function request(payload, responseId, timeout = 1500) {          // una respuesta tarda decenas de ms; si no llega en 1,5 s se reintenta
   return new Promise((resolve, reject) => {
     const w = { id: responseId, resolve, reject };
     w.timer = setTimeout(() => { dropWaiter(w); reject(new Error("sin respuesta 0x" + responseId.toString(16))); }, timeout);
@@ -565,6 +580,7 @@ function notify(payload, responseId) {
   state.waiters.push(w);
   return writeRaw(pack(payload)).catch(() => { clearTimeout(w.timer); dropWaiter(w); });
 }
+function onTx(e) { const v = e.target.value; onData(new Uint8Array(v.buffer, v.byteOffset, v.byteLength)); }
 function onData(chunk) {
   for (const b of chunk) {
     if (b === 0x02) {
@@ -576,7 +592,7 @@ function onData(chunk) {
 function handleMessage(m) {
   const i = state.waiters.findIndex(w => w.id === m[0]);
   if (i >= 0) { const w = state.waiters.splice(i, 1)[0]; clearTimeout(w.timer); if (!w.ignore) w.resolve(m); }
-  if (m[0] === 0x3C) parseDevices(m);
+  if (m[0] === 0x3C && connected()) parseDevices(m);
   else if (m[0] === 0x21) log("Hub: " + new TextDecoder().decode(m.slice(1)).replace(/\0.*$/s, ""));
 }
 function parseDevices(m) {
@@ -593,7 +609,7 @@ function parseDevices(m) {
   }
   const changed = Object.keys(motors).sort().join() !== Object.keys(state.motors).sort().join() || !state.motorsKnown;
   state.motors = motors; state.motorsKnown = true;
-  if (changed) { log("Motores detectados: " + (Object.keys(motors).join(", ") || "ninguno")); recompute(); }
+  if (changed) { log("Motores detectados: " + (Object.keys(motors).join(", ") || "ninguno")); recompute(); scheduleWarm(); }
   refreshInfo();
 }
 
@@ -602,11 +618,10 @@ function parseDevices(m) {
 // Python que se sube a una ranura del hub y se ejecuta. Solo se envía el estado más reciente.
 // Si el estado es de movimiento, el programa se detiene solo pasado el tiempo de seguridad ("lease");
 // mientras el celular siga conectado, lo renueva antes de que venza.
-function leaseFor(target) {
-  if (state.test) return TEST_MS + 100;
-  return moving(target) ? cfg.lease : 0;
-}
-function buildProgram(target, lease) {
+const leaseOf = target => (moving(target) ? cfg.lease : 0);
+const leaseFor = target => (state.test ? TEST_MS + 100 : leaseOf(target));
+function buildProgram(target, lease) { return new TextEncoder().encode(programText(target, lease)); }
+function programText(target, lease) {
   const used = [...new Set([cfg.portLeft, cfg.portRight, cfg.portArm])];
   const hold = q => q === cfg.portArm && cfg.armHold;
   const stopCall = q => "s(p." + q + (hold(q) ? ",1" : "") + ")";
@@ -621,7 +636,7 @@ function buildProgram(target, lease) {
   L.push("async def w():");
   if (lease > 0) { L.push(" await runloop.sleep_ms(" + lease + ")"); for (const q of used) L.push(" " + stopCall(q)); }
   L.push(" while 1:await runloop.sleep_ms(1000)", "runloop.run(w())");
-  return new TextEncoder().encode(L.join("\n"));
+  return L.join("\n");
 }
 
 function scheduleSend() { clearTimeout(state.sendTimer); state.sendTimer = setTimeout(pump, 0); }
@@ -656,9 +671,8 @@ async function pump() {
   }
 }
 
-async function stopRunning() {                               // peticiones una detrás de otra: comparten el mismo tipo de respuesta
-  const slots = state.running !== null ? [state.running] : slotPair();
-  for (const s of slots) await request(MSG.programFlow(true, s), 0x1F, 1500).catch(() => {});
+async function stopRunning() {
+  if (state.running !== null) await request(MSG.programFlow(true, state.running), 0x1F, 1500).catch(() => {});
   state.running = null;
 }
 async function upload(program, slot) {
@@ -674,33 +688,90 @@ async function upload(program, slot) {
   }
   return true;
 }
-// Devuelve true si el programa llegó a arrancar.
-async function sendState(target, key) {
-  if (!moving(target)) fastStop();                            // en reposo, primero se corta lo que esté en marcha
-  const [a, b] = slotPair();
-  const slot = state.running === a ? b : a;                   // se sube a la ranura libre; el programa actual sigue mientras tanto
-  const program = buildProgram(target, leaseFor(target));
-  // Si mientras se subía un programa de movimiento ya pediste parar, no se arranca. Si solo cambió la velocidad
-  // o la dirección, se arranca igualmente (el estado nuevo se envía justo después): así no hay que esperar a que el joystick se quede quieto.
-  const stale = () => moving(target) && !moving(state.target);
-
+// ---- Programas guardados en las ranuras del hub (caché) ----
+// Subir un programa cuesta varios mensajes de ida y vuelta; arrancar uno ya guardado cuesta uno solo.
+// Por eso se recuerda qué texto hay en cada ranura y, si el estado pedido ya está guardado, solo se arranca esa ranura.
+// Nunca se elige la ranura que está corriendo: así el robot sigue moviéndose mientras se prepara el siguiente programa,
+// y al renovar el temporizador se alterna entre dos copias idénticas sin volver a subir nada.
+const busySlot = s => s === state.running || s === state.starting;
+function findSlot(text) { return slotPool().find(s => state.slotText[s] === text && !busySlot(s)) ?? null; }
+function pickVictim() {
+  const pinned = cfg.slots >= 10 ? programText(targetFrom(0, 0, 0), 0) : null;   // el programa de reposo no se borra
+  const cands = slotPool().filter(s => !busySlot(s));
+  const free = cands.find(s => !state.slotText[s]);
+  if (free !== undefined) return free;
+  const evictable = cands.filter(s => state.slotText[s] !== pinned);
+  return (evictable.length ? evictable : cands).sort((a, b) => (state.lastUse[a] || 0) - (state.lastUse[b] || 0))[0];
+}
+async function uploadInto(slot, text) {
+  const program = new TextEncoder().encode(text);
+  state.slotText[slot] = null;                                // mientras se sube, esa ranura no vale
   let ok = await upload(program, slot);
   if (!ok) { await request(MSG.clearSlot(slot), 0x47, 1500).catch(() => {}); ok = await upload(program, slot); }
   if (!ok) { await stopRunning(); ok = await upload(program, slot); }
   if (!ok) throw new Error("el hub rechazó la subida");
-  if (stale()) return false;                                  // cambió mientras se subía: no arrancar un estado viejo
+  state.slotText[slot] = text;
+}
+async function startSlot(slot) {
+  state.starting = slot;
+  try {
+    if (!cfg.fast || state.needStop) await stopRunning();
+    let st = await request(MSG.programFlow(false, slot), 0x1F);
+    if (st[1] !== 0) {
+      state.needStop = true; log("El hub pide detener el programa anterior antes de iniciar el nuevo; se ajusta.");
+      await stopRunning();
+      st = await request(MSG.programFlow(false, slot), 0x1F);
+    }
+    if (st[1] !== 0) throw new Error("el hub no inició el programa");
+    state.running = slot;
+  } finally { state.starting = null; }
+}
+// Devuelve true si el programa llegó a arrancar.
+async function sendState(target, key) {
+  if (!moving(target)) fastStop();                            // en reposo, primero se corta lo que esté en marcha
+  const text = programText(target, leaseFor(target));
+  // Si mientras se subía un programa de movimiento ya pediste parar, no se arranca. Si solo cambió la velocidad
+  // o la dirección, se arranca igualmente (el estado nuevo se envía justo después): así no hay que esperar a que el joystick se quede quieto.
+  const stale = () => moving(target) && !moving(state.target);
 
-  if (!cfg.fast || state.needStop) await stopRunning();
-  let st = await request(MSG.programFlow(false, slot), 0x1F);
-  if (st[1] !== 0) {
-    state.needStop = true; log("El hub pide detener el programa anterior antes de iniciar el nuevo; se ajusta.");
-    await stopRunning();
-    st = await request(MSG.programFlow(false, slot), 0x1F);
-  }
-  if (st[1] !== 0) throw new Error("el hub no inició el programa");
-  state.running = slot;
+  let slot = findSlot(text);
+  if (slot === null) {                                        // no estaba guardado: se sube primero
+    slot = pickVictim();
+    await uploadInto(slot, text);
+    if (stale()) return false;                                // cambió mientras se subía: no arrancar un estado viejo
+  } else if (stale()) return false;
+  state.lastUse[slot] = ++state.tick;
+  await startSlot(slot);
   msg("");
   return true;
+}
+
+// ---- Precarga: al conectar (y al cambiar ajustes) se guardan en el hub los programas más usados ----
+const WARM_SET = [[0, 0, 0], [0, 1, 0], [0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]];   // x, y, brazo: reposo, adelante, atrás, giro der., giro izq., brazo sube, brazo baja
+function scheduleWarm() { clearTimeout(state.warmTimer); state.warmTimer = setTimeout(warmUp, 800); }
+async function warmUp() {
+  if (!connected() || !state.info || !state.motorsKnown || cfg.slots < 10 || state.warming) return;
+  state.warming = true;
+  try {
+    const texts = [...new Set(WARM_SET.map(([x, y, a]) => { const t = targetFrom(x, y, a); return programText(t, leaseOf(t)); }))];
+    let done = 0;
+    state.warm = { done, total: texts.length }; refreshInfo();
+    for (const text of texts) {
+      while (connected() && (state.sending || moving(state.target) || state.test)) await sleep(150);   // el robot en uso tiene prioridad
+      if (!connected()) return;
+      if (!slotPool().some(s => state.slotText[s] === text)) {
+        state.sending = true;
+        try { const slot = pickVictim(); await uploadInto(slot, text); state.lastUse[slot] = ++state.tick; }
+        finally { state.sending = false; }
+      }
+      state.warm = { done: ++done, total: texts.length }; refreshInfo();
+      if (JSON.stringify(state.target) !== state.sentKey) scheduleSend();
+    }
+  } catch (e) {
+    log("Precarga interrumpida: " + e.message);
+  } finally {
+    state.warming = false; state.warm = null; refreshInfo();
+  }
 }
 
 checkSupport();
