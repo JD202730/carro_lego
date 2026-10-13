@@ -971,9 +971,9 @@ const labProbe = {
     "print('lab " + x + y + "')", "async def w():", " while 1:await runloop.sleep_ms(1000)", "runloop.run(w())"].join("\n"),
   // mínimo: sin motor ni runloop; el programa termina solo
   fin: (x, y) => ["from hub import light_matrix as lm", "try:", " " + labPixel(x, y), "except Exception as e:", " print('lm err '+str(e))", "print('lab " + x + y + "')"].join("\n"),
-  // mínimo en bucle, sin runloop
-  bucle: (x, y) => ["from hub import light_matrix as lm", "import time", "try:", " " + labPixel(x, y), "except Exception as e:", " print('lm err '+str(e))",
-    "print('lab " + x + y + "')", "while 1:", " try:time.sleep_ms(200)", " except:pass"].join("\n"),
+  // mínimo con un bucle de cálculo, sin runloop ni motor; el bucle es FINITO para no dejar nunca el hub ocupado
+  bucle: (x, y) => ["from hub import light_matrix as lm", "try:", " " + labPixel(x, y), "except Exception as e:", " print('lm err '+str(e))",
+    "print('lab " + x + y + "')", "i=0", "while i<200000:", " i+=1"].join("\n"),
   base: () => ["import runloop", "async def w():", " while 1:await runloop.sleep_ms(1000)", "runloop.run(w())"].join("\n"),
 };
 function labLog(t) { log("LAB> " + t); $("labEstado").textContent = t; }
