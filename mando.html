@@ -172,6 +172,14 @@
     </div>
 
     <div class="sec">
+      <h3>Laboratorio del hub (diagnóstico avanzado)</h3>
+      <div class="row"><span>Explora el hub y mide cuánto tarda en arrancar cada tipo de programa</span><button class="btn" id="btnLab">Ejecutar</button></div>
+      <div class="hint">No mueve ningún motor. Deja el robot <b>quieto</b>: dura unos 50 s y usa las ranuras 15 a 19 del hub. Al terminar, copia el registro completo
+        y pégalo en el chat. Solo funciona con la opción «Medir arranques, paradas y huecos» activada.</div>
+      <div class="row"><span id="labEstado" style="color:var(--muted)"></span></div>
+    </div>
+
+    <div class="sec">
       <details><summary>Registro técnico</summary>
         <div style="padding:0 10px 8px"><button class="btn" id="btnCopyLog">Copiar registro completo</button></div>
         <div id="log"></div></details>
@@ -279,6 +287,7 @@ try {
   const saved = JSON.parse(localStorage.getItem("spikeMando5") || "{}");
   if ((saved.ver || 1) < 2) { if (saved.lease === 1500) saved.lease = 3000; saved.ver = 2; }   // el valor antiguo reiniciaba el programa demasiado a menudo
   Object.assign(cfg, saved);
+  if (cfg.lease === 1500) cfg.lease = 3000;                    // con 1,5 s de temporizador el hub no llega a relevar el programa a tiempo
 } catch (e) {}
 const saveCfg = () => { try { localStorage.setItem("spikeMando5", JSON.stringify(cfg)); } catch (e) {} };
 
@@ -288,7 +297,7 @@ function fillSelect(sel, opts, value) {
 }
 const portOpts = PORTS.map(p => [p, "Puerto " + p]);
 for (const k of ["portLeft", "portRight", "portArm"]) fillSelect($(k), portOpts, cfg[k]);
-fillSelect($("lease"), [[1500, "1,5 s (más seguro, más paradas)"], [3000, "3 s (recomendado)"], [5000, "5 s (menos paradas)"], [10000, "10 s (casi sin paradas, menos seguro)"], [0, "Desactivada (no recomendado)"]], cfg.lease);
+fillSelect($("lease"), [[3000, "3 s (recomendado)"], [5000, "5 s (menos paradas)"], [10000, "10 s (casi sin paradas, menos seguro)"], [0, "Desactivada (no recomendado)"]], cfg.lease);
 fillSelect($("slots"), [[10, "10 ranuras (10–19), con precarga (recomendado)"], [4, "4 ranuras (16–19), sin precarga"], [2, "2 ranuras (18–19), sin precarga"]], cfg.slots);
 for (const k of ["invLeft", "invRight", "invArm", "armHold", "fast", "showAll", "diag"]) $(k).checked = cfg[k];
 for (const k of ["maxDrive", "maxArm"]) $(k).value = cfg[k];
@@ -324,7 +333,7 @@ const state = {
   target: { A: 0, B: 0, C: 0, D: 0, E: 0, F: 0 },    // -100..100 por puerto (ya con la inversión aplicada)
   motors: {}, motorsKnown: false, battery: null, lastMs: null,
   sentKey: null, sending: false, fails: 0, running: null, starting: null, lastStarted: null, skips: 0, unkLogged: false, devLogged: false,
-  t0: performance.now(), typeOf: {}, prevMoving: false,
+  t0: performance.now(), typeOf: {}, prevMoving: false, hubReadyAt: 0, matrix: null, lab: false,
   slotText: {}, lastUse: {}, tick: 0, warming: false, warm: null,   // lo que hay guardado en cada ranura del hub
   joy: { x: 0, y: 0 }, arm: 0, test: null, lvl: { l: 0, r: 0 },
   needStop: false, renewTimer: null, renewNext: false, testTimer: null, sendTimer: null, warmTimer: null,
@@ -708,6 +717,7 @@ function parseDevices(m) {
     const t = m[i];
     if (t in sizes) {
       if (t === 0x00) state.battery = m[i + 1];
+      if (t === 0x02) state.matrix = Array.from(m.slice(i + 1, i + 26));          // pantalla 5x5 del hub (lo usa el laboratorio)
       if (t === 0x0A && PORTS[m[i + 1]]) { motors[PORTS[m[i + 1]]] = { type: m[i + 2], speed: dv.getInt8(i + 7), pos: dv.getInt32(i + 8, true) }; state.typeOf[PORTS[m[i + 1]]] = m[i + 2]; }
       i += sizes[t];
     } else {
@@ -841,7 +851,12 @@ function pickVictim() {
   const evictable = cands.filter(s => state.slotText[s] !== pinned);
   return (evictable.length ? evictable : cands).sort((a, b) => (state.lastUse[a] || 0) - (state.lastUse[b] || 0))[0];
 }
+// Tras cada arranque el hub se queda ~1,5 s "ocupado" (en tu traza: las respuestas llegan casi 1,5 s después y una subida hecha en ese
+// intervalo fue rechazada dos veces). Las subidas esperan a que ese intervalo termine.
+const HUB_LAUNCH_MS = 1500;
+async function waitHubReady() { const w = state.hubReadyAt - performance.now(); if (w > 0) await sleep(w + 30); }
 async function uploadInto(slot, text) {
+  await waitHubReady();
   const program = new TextEncoder().encode(text);
   state.slotText[slot] = null;                                // mientras se sube, esa ranura no vale
   let ok = await upload(program, slot);
@@ -864,7 +879,7 @@ async function startSlot(slot, skip) {
     if (skip && skip()) return false;
     if (!cfg.fast || state.needStop) haltRunning();
     state.lastStarted = slot;
-    let st = await request(MSG.programFlow(false, slot), 0x1F);
+    let st = await request(MSG.programFlow(false, slot), 0x1F, 3000);   // si el hub está ocupado la respuesta puede tardar ~1,5 s
     // El hub puede tardar en terminar de parar el programa anterior: si rechaza el arranque se reintenta unas veces.
     for (let intento = 0; st[1] !== 0 && intento < 3; intento++) {
       if (!state.needStop) log("El hub pide detener el programa anterior antes de iniciar el nuevo; se ajusta.");
@@ -872,11 +887,12 @@ async function startSlot(slot, skip) {
       haltRunning(intento === 0);                             // la primera vez se paran todas las ranuras del mando (no se sabe cuál corre)
       if (intento > 0) await sleep(150);
       if (skip && skip()) return false;
-      st = await request(MSG.programFlow(false, slot), 0x1F);
+      st = await request(MSG.programFlow(false, slot), 0x1F, 3000);
     }
     if (st[1] !== 0) throw new Error("el hub no inició el programa");
     state.running = slot;
     state.diag.ackAt = performance.now();
+    state.hubReadyAt = state.diag.ackAt + HUB_LAUNCH_MS;
     return true;
   } finally { state.starting = null; }
 }
@@ -932,6 +948,106 @@ async function warmUp() {
     state.warming = false; state.warm = null; refreshInfo();
   }
 }
+
+/* ================= LABORATORIO DEL HUB (no mueve motores) ================= */
+// 1) Le pregunta al propio hub qué módulos y funciones tiene (¿hay algún canal para recibir órdenes sin reiniciar el programa?).
+// 2) Mide cuánto tarda en ejecutarse cada tipo de programa tras confirmar el arranque, usando un píxel de la pantalla 5x5 como
+//    señal (la telemetría lo muestra, no depende del búfer de la consola) y un "ping" para ver cuánto se queda ocupado el hub.
+const LAB_EXPLORE = [
+  "def p(x):", " x=str(x)", " while x:", "  print(x[:150])", "  x=x[150:]",
+  "try:", " import sys", " p('sys: '+str(sys.implementation)+' '+str(sys.version))", "except Exception as e:", " p('sys err '+str(e))",
+  "try:", " import hub", " p('hub: '+str(dir(hub)))", " try:", "  p('hub.config: '+str(hub.config))", " except Exception as e:", "  p('hub.config err '+str(e))",
+  "except Exception as e:", " p('hub err '+str(e))",
+  "try:", " from hub import light_matrix as lm", " p('light_matrix: '+str(dir(lm)))", "except Exception as e:", " p('lm err '+str(e))",
+  "try:", " import os", " p('raiz: '+str(os.listdir('/')))", " for d in os.listdir('/'):", "  try:", "   p('/'+d+': '+str(os.listdir('/'+d)))", "  except Exception as e:", "   pass",
+  "except Exception as e:", " p('os err '+str(e))",
+  "try:", " help('modules')", "except Exception as e:", " p('help err '+str(e))",
+  "p('fin de la exploracion')",
+].join("\n");
+const labPixel = (x, y) => "lm.clear();lm.set_pixel(" + x + "," + y + ",100)";
+const labProbe = {
+  // imports como los programas reales y bucle con runloop
+  real: (x, y) => ["import motor as m,runloop", "from hub import port as p,light_matrix as lm", "try:", " " + labPixel(x, y), "except Exception as e:", " print('lm err '+str(e))",
+    "print('lab " + x + y + "')", "async def w():", " while 1:await runloop.sleep_ms(1000)", "runloop.run(w())"].join("\n"),
+  // mínimo: sin motor ni runloop; el programa termina solo
+  fin: (x, y) => ["from hub import light_matrix as lm", "try:", " " + labPixel(x, y), "except Exception as e:", " print('lm err '+str(e))", "print('lab " + x + y + "')"].join("\n"),
+  // mínimo en bucle, sin runloop
+  bucle: (x, y) => ["from hub import light_matrix as lm", "import time", "try:", " " + labPixel(x, y), "except Exception as e:", " print('lm err '+str(e))",
+    "print('lab " + x + y + "')", "while 1:", " try:time.sleep_ms(200)", " except:pass"].join("\n"),
+  base: () => ["import runloop", "async def w():", " while 1:await runloop.sleep_ms(1000)", "runloop.run(w())"].join("\n"),
+};
+function labLog(t) { log("LAB> " + t); $("labEstado").textContent = t; }
+function pixelOn(idx) { const mt = state.matrix; return !!mt && mt[idx] > 20 && mt.filter(v => v > 0).length <= 2; }
+async function waitPixel(idx, timeout) {
+  const t0 = performance.now();
+  while (performance.now() - t0 < timeout) { if (pixelOn(idx)) return Math.round(performance.now() - t0); await sleep(15); }
+  return null;
+}
+async function labMeasure(titulo, slot, text, x, y) {
+  await uploadInto(slot, text);
+  await sleep(400);
+  const idx = y * 5 + x, t0 = performance.now();
+  const pix = waitPixel(idx, 8000);
+  const ping = sleep(250).then(async () => { const t1 = performance.now(); try { await request(MSG.info(), 0x01, 8000); return Math.round(performance.now() - t1); } catch (e) { return null; } });
+  await startSlot(slot);
+  const ack = Math.round(state.diag.ackAt - t0);
+  const [pixMs, pingMs] = await Promise.all([pix, ping]);
+  labLog(titulo + ": confirmación a los " + ack + " ms · píxel visible a los " + (pixMs === null ? "(nunca)" : pixMs + " ms") + " · un ping enviado a los 250 ms tardó " + (pingMs === null ? "(sin respuesta)" : pingMs + " ms"));
+  return { ack, pixMs, pingMs };
+}
+async function runLab() {
+  if (!connected() || !state.info) { msg("Conecta el hub antes de usar el laboratorio.", true); return; }
+  if (!cfg.diag) { msg("Activa «Medir arranques, paradas y huecos» para usar el laboratorio.", true); return; }
+  if (state.lab) return;
+  stopAll();
+  for (let i = 0; i < 40 && state.sending; i++) await sleep(100);
+  if (state.sending) { msg("El mando está ocupado; inténtalo en unos segundos.", true); return; }
+  state.lab = true; state.sending = true; clearTimeout(state.renewTimer); clearTimeout(state.warmTimer);
+  $("btnLab").disabled = true;
+  const labSlots = [19, 18, 17, 16, 15];
+  try {
+    await request(MSG.deviceNotif(100), 0x29).catch(() => {});
+    labLog("== LABORATORIO: inicio (no se mueve ningún motor) ==");
+    // 1) exploración del hub
+    labLog("1/6 explorando el hub (la consola tarda unos segundos en mostrar el resultado)…");
+    await uploadInto(labSlots[0], LAB_EXPLORE);
+    await startSlot(labSlots[0]);
+    await sleep(9000);
+    // 2) con un programa en marcha
+    labLog("2/6 arrancar un programa MIENTRAS OTRO ESTÁ EN MARCHA…");
+    await uploadInto(labSlots[1], labProbe.base());
+    await startSlot(labSlots[1]);
+    await sleep(3500);
+    await labMeasure("Con otro programa en marcha (programa como los reales)", labSlots[0], labProbe.real(0, 0), 0, 0);
+    await sleep(3500);
+    // 3) sin programa en marcha (parada explícita y espera)
+    labLog("3/6 arrancar SIN ningún programa en marcha (tras parar y esperar)…");
+    if (state.running !== null) { await request(MSG.programFlow(true, state.running), 0x1F, 4000).catch(() => {}); state.running = null; }
+    await sleep(4000);
+    await labMeasure("Sin ningún programa en marcha (programa como los reales)", labSlots[2], labProbe.real(1, 0), 1, 0);
+    await sleep(3500);
+    // 4) programa mínimo que termina solo, y qué tarda el siguiente
+    labLog("4/6 programa mínimo que termina solo…");
+    await labMeasure("Programa mínimo que termina solo (con otro en marcha)", labSlots[3], labProbe.fin(2, 0), 2, 0);
+    await sleep(4000);
+    labLog("5/6 arrancar cuando el anterior ya terminó solo…");
+    await labMeasure("Arrancar tras un programa que terminó solo (programa como los reales)", labSlots[4], labProbe.real(3, 0), 3, 0);
+    await sleep(3500);
+    labLog("6/6 programa mínimo en bucle, sin runloop ni motor…");
+    await labMeasure("Programa mínimo en bucle (con otro en marcha)", labSlots[1], labProbe.bucle(4, 0), 4, 0);
+    await sleep(2500);
+    labLog("== LABORATORIO: fin. Copia el registro completo y pégalo en el chat. ==");
+  } catch (e) {
+    labLog("El laboratorio se interrumpió: " + e.message);
+  } finally {
+    for (const s of labSlots) state.slotText[s] = null;       // esas ranuras ya no tienen los programas del mando
+    state.running = null; state.lastStarted = null; state.sentKey = null; state.hubReadyAt = performance.now() + HUB_LAUNCH_MS;
+    request(MSG.deviceNotif(cfg.diag ? 200 : 300), 0x29).catch(() => {});
+    state.lab = false; state.sending = false; $("btnLab").disabled = false;
+    recompute(); scheduleWarm();                              // el mando vuelve a su estado de reposo y vuelve a precargar
+  }
+}
+$("btnLab").addEventListener("click", runLab);
 
 checkSupport();
 recompute(false);
