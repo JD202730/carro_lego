@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Mando SPIKE Prime</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --panel: #1a222c;
+    --btn: #2a3644;
+    --btn-active: #3d8bfd;
+    --text: #e8eef5;
+    --muted: #8a99ab;
+    --ok: #35c46a;
+    --warn: #f0b429;
+    --bad: #f0524f;
+    --radius: 18px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { min-height: 100vh; min-height: 100dvh; padding: max(10px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right))
+         max(10px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+         display: flex; flex-direction: column; gap: 10px;
+         overscroll-behavior: none; user-select: none; -webkit-user-select: none;
+         -webkit-touch-callout: none; }
+
+  header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  h1 { font-size: 17px; margin: 0; flex: 1 1 auto; }
+  .pill { font-size: 13px; padding: 6px 12px; border-radius: 999px; background: var(--panel);
+    border: 1px solid #2c3a49; white-space: nowrap; }
+  .pill.ok { border-color: var(--ok); color: var(--ok); }
+  .pill.warn { border-color: var(--warn); color: var(--warn); }
+  .pill.bad { border-color: var(--bad); color: var(--bad); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+  button { font: inherit; color: var(--text); background: var(--btn); border: 0; border-radius: var(--radius);
+    touch-action: none; cursor: pointer; }
+  button.small { font-size: 14px; padding: 9px 14px; border-radius: 12px; touch-action: manipulation; }
+  button.primary { background: var(--btn-active); }
+  button:disabled { opacity: .45; }
+
+  main { flex: 1 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (orientation: portrait) { main { grid-template-columns: 1fr; grid-template-rows: auto auto; } }
+
+  .panel { background: var(--panel); border-radius: 24px; padding: 14px; display: flex;
+    flex-direction: column; gap: 10px; }
+  .panel h2 { margin: 0; font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+
+  .dpad { flex: 1 1 auto; display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr);
+    gap: 10px; min-height: 150px; }
+  @media (orientation: portrait) { .dpad { min-height: 280px; } .armpad { min-height: 200px; } }
+  .dpad button, .armpad button { font-size: 30px; font-weight: 600; }
+  .dpad button.on, .armpad button.on { background: var(--btn-active); }
+  .dpad .stop { background: var(--bad); font-size: 15px; font-weight: 800; letter-spacing: .04em; }
+  .dpad .stop:active { filter: brightness(1.25); }
+  .dpad .fwd { grid-column: 2; grid-row: 1; }
+  .dpad .lft { grid-column: 1; grid-row: 2; }
+  .dpad .stop { grid-column: 2; grid-row: 2; }
+  .dpad .rgt { grid-column: 3; grid-row: 2; }
+  .dpad .bck { grid-column: 2; grid-row: 3; }
+
+  .armpad { flex: 1 1 auto; display: grid; grid-template-rows: 1fr 1fr; gap: 10px; min-height: 150px; }
+  .armpad button { font-size: 22px; }
+  .armpad small { display: block; font-size: 12px; font-weight: 400; color: var(--muted); margin-top: 2px; }
+  .armpad button.on small { color: #dbe9ff; }
+
+  details { background: var(--panel); border-radius: 18px; padding: 10px 14px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+  .grid2 { display: grid; grid-template-columns: auto 1fr auto; gap: 8px 12px; align-items: center; margin-top: 10px; font-size: 14px; }
+  input[type=range] { width: 100%; min-width: 120px; }
+  .calrow { display: grid; grid-template-columns: 1fr auto auto; gap: 8px 10px; align-items: center; margin-top: 8px; font-size: 14px; }
+  .calrow label { display: flex; gap: 6px; align-items: center; }
+  .hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; line-height: 1.4; }
+  #log { font: 12px ui-monospace, Consolas, monospace; color: var(--muted); min-height: 1.3em; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  #warn { display: none; background: #3a2a10; border: 1px solid var(--warn); color: var(--warn); border-radius: 12px;
+    padding: 10px 12px; font-size: 14px; line-height: 1.4; }
+  a { color: var(--btn-active); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="title">🤖 Mando SPIKE Prime</h1>
+  <span id="status" class="pill bad">Desconectado</span>
+  <div class="row">
+    <button id="btnConnect" class="small primary">Conectar</button>
+    <button id="btnStartProg" class="small" hidden>▶ Iniciar programa</button>
+  </div>
+</header>
+
+<div id="warn"></div>
+
+<main>
+  <section class="panel">
+    <h2>Ruedas</h2>
+    <div class="dpad">
+      <button class="fwd" data-hold="fwd" aria-label="Avanzar">▲</button>
+      <button class="lft" data-hold="left" aria-label="Girar a la izquierda">◀</button>
+      <button class="stop" id="btnStop" aria-label="Detener">STOP</button>
+      <button class="rgt" data-hold="right" aria-label="Girar a la derecha">▶</button>
+      <button class="bck" data-hold="back" aria-label="Retroceder">▼</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Garra (puerto D)</h2>
+    <div class="armpad">
+      <button data-hold="armUp">⬆ Subir garra<small>mantén pulsado</small></button>
+      <button data-hold="armDown">⬇ Bajar garra<small>mantén pulsado</small></button>
+    </div>
+    <div class="row">
+      <button id="btnRelease" class="small" title="Suelta el motor del brazo (sin mantener posición)">Soltar brazo</button>
+      <button id="btnHoldArm" class="small" title="El brazo mantiene su posición al soltar el botón">Mantener posición</button>
+    </div>
+  </section>
+</main>
+
+<div id="log"></div>
+
+<details>
+  <summary>Velocidades y calibración</summary>
+  <div class="grid2">
+    <span>Avance</span><input id="spdDrive" type="range" min="20" max="100" step="5"><b id="spdDriveV"></b>
+    <span>Giro</span><input id="spdTurn" type="range" min="20" max="100" step="5"><b id="spdTurnV"></b>
+    <span>Garra</span><input id="spdArm" type="range" min="20" max="100" step="5"><b id="spdArmV"></b>
+  </div>
+  <p class="hint"><b>Calibración del sentido de giro.</b> Pon el robot en alto (ruedas sin tocar el suelo) y pulsa «Probar»:
+    el motor gira medio segundo en su sentido «positivo» del mando. Si no gira como se indica, marca «Invertir». Se guarda en este celular
+    y se envía al hub cada vez que te conectas.</p>
+  <div class="calrow">
+    <span>Rueda izquierda (A) debe ir hacia <b>adelante</b></span>
+    <label><input type="checkbox" id="invA"> Invertir</label>
+    <button class="small" data-test="A">Probar</button>
+    <span>Rueda derecha (E) debe ir hacia <b>adelante</b></span>
+    <label><input type="checkbox" id="invE"> Invertir</label>
+    <button class="small" data-test="E">Probar</button>
+    <span>Garra (D) debe <b>subir</b></span>
+    <label><input type="checkbox" id="invD"> Invertir</label>
+    <button class="small" data-test="D">Probar</button>
+  </div>
+  <p class="hint">Valores actuales para copiar a <code>hub_program.py</code> si quieres dejarlos fijos:
+    <code id="invCode"></code></p>
+  <p class="hint"><b>Varios robots.</b> Escribe aquí el nombre exacto del hub de ESTE celular (el que le pusiste en Pybricks Code):
+    el selector de Bluetooth solo mostrará ese hub. Déjalo vacío para ver todos los hubs Pybricks.</p>
+  <div class="row" style="margin-top:6px">
+    <input id="hubName" type="text" maxlength="30" placeholder="Nombre del hub (ej. Robot1)" autocomplete="off"
+      style="flex:1 1 180px;font:inherit;padding:9px 12px;border-radius:12px;border:1px solid #2c3a49;background:var(--bg);color:var(--text)">
+  </div>
+  <label class="row" style="margin-top:8px;font-size:14px"><input type="checkbox" id="showAll"> Mi hub no aparece en la lista: mostrar todos los dispositivos</label>
+</details>
+
+<script>
+"use strict";
+
+// ---------- Protocolo Pybricks (BLE) ----------
+const SVC  = "c5f50001-8280-46da-89f4-6d8051e4aeef";   // Pybricks service
+const CMD  = "c5f50002-8280-46da-89f4-6d8051e4aeef";   // command / event
+const CAPS = "c5f50003-8280-46da-89f4-6d8051e4aeef";   // hub capabilities
+const CMD_START_USER_PROGRAM = 1;
+const CMD_WRITE_STDIN = 6;
+const EVT_STATUS = 0, EVT_STDOUT = 1;
+const FLAG_USER_PROGRAM_RUNNING = 1 << 6;
+
+const HEARTBEAT_MS = 100;       // el hub frena si pasan 400 ms sin recibir nada
+const WRITE_TIMEOUT_MS = 1500;
+
+// ---------- Estado ----------
+const $ = (id) => document.getElementById(id);
+const held = { fwd: false, back: false, left: false, right: false, armUp: false, armDown: false };
+const cfg = loadCfg();
+let device = null, server = null, cmdChar = null;
+let maxChar = 20, connected = false, progRunning = null;
+let busy = false, dirty = false, lastSentAt = 0, urgentStop = false, test = null, testTimer = null;
+let wakeLock = null;
+
+function loadCfg() {
+  const d = { drive: 70, turn: 55, arm: 60, invA: true, invE: false, invD: false, hold: true, hubName: "" };
+  try { return Object.assign(d, JSON.parse(localStorage.getItem("spikeCfg") || "{}")); } catch (e) { return d; }
+}
+function saveCfg() { try { localStorage.setItem("spikeCfg", JSON.stringify(cfg)); } catch (e) {} }
+
+// ---------- Cálculo de velocidades ----------
+function clamp(v) { return Math.max(-100, Math.min(100, Math.round(v))); }
+
+// Devuelve [izquierda, derecha, brazo] en % de potencia (positivo = "adelante"/"subir").
+function computeState() {
+  if (test) return test.state;
+  const th = (held.fwd ? 1 : 0) - (held.back ? 1 : 0);
+  const tn = (held.right ? 1 : 0) - (held.left ? 1 : 0);
+  let l = 0, r = 0;
+  if (th !== 0 && tn !== 0) {            // arco: la rueda interior va más lenta
+    const outer = th * cfg.drive, inner = th * cfg.drive * 0.35;
+    l = tn > 0 ? outer : inner;
+    r = tn > 0 ? inner : outer;
+  } else if (th !== 0) {                 // recto
+    l = r = th * cfg.drive;
+  } else if (tn !== 0) {                 // giro sobre su eje
+    l = tn * cfg.turn;
+    r = -tn * cfg.turn;
+  }
+  const a = ((held.armUp ? 1 : 0) - (held.armDown ? 1 : 0)) * cfg.arm;
+  return [clamp(l), clamp(r), clamp(a)];
+}
+
+// ---------- Envío (siempre gana el último estado; una sola escritura en vuelo) ----------
+function buildLine() {
+  if (urgentStop) { urgentStop = false; return "X\n"; }
+  const [l, r, a] = computeState();
+  return "S " + l + " " + r + " " + a + "\n";
+}
+
+function withTimeout(p, ms) {
+  return new Promise((res, rej) => {
+    const t = setTimeout(() => rej(new Error("tiempo de espera de escritura")), ms);
+    p.then((v) => { clearTimeout(t); res(v); }, (e) => { clearTimeout(t); rej(e); });
+  });
+}
+
+async function writeLine(text) {
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length + 1 > maxChar) throw new Error("comando demasiado largo");
+  const data = new Uint8Array(bytes.length + 1);
+  data[0] = CMD_WRITE_STDIN;
+  data.set(bytes, 1);
+  const p = cmdChar.properties;
+  if (cmdChar.writeValueWithResponse && p.write) await cmdChar.writeValueWithResponse(data);
+  else if (cmdChar.writeValueWithoutResponse && p.writeWithoutResponse) await cmdChar.writeValueWithoutResponse(data);
+  else await cmdChar.writeValue(data);
+}
+
+async function pump() {
+  if (!connected || !cmdChar) return;
+  if (busy) { dirty = true; return; }
+  busy = true;
+  try {
+    do {
+      dirty = false;
+      lastSentAt = performance.now();
+      await withTimeout(writeLine(buildLine()), WRITE_TIMEOUT_MS);
+    } while (dirty && connected);
+  } catch (e) {
+    log("Error de envío: " + e.message);
+  } finally {
+    busy = false;
+  }
+}
+
+setInterval(() => {
+  if (connected && !busy && performance.now() - lastSentAt >= HEARTBEAT_MS) pump();
+}, 25);
+
+async function sendRaw(text) {          // para config (C / H): espera su turno
+  if (!connected) return;
+  while (busy) await new Promise((r) => setTimeout(r, 5));
+  busy = true;
+  try { lastSentAt = performance.now(); await withTimeout(writeLine(text), WRITE_TIMEOUT_MS); }
+  catch (e) { log("Error de envío: " + e.message); }
+  finally { busy = false; }
+}
+
+function sendConfig() {
+  return sendRaw("C " + (cfg.invA ? 1 : 0) + " " + (cfg.invE ? 1 : 0) + " " + (cfg.invD ? 1 : 0) + "\n")
+    .then(() => sendRaw("H " + (cfg.hold ? 1 : 0) + "\n"));
+}
+
+// ---------- Controles ----------
+function setHeld(name, on) {
+  if (held[name] === on) return;
+  held[name] = on;
+  document.querySelectorAll('[data-hold="' + name + '"]').forEach((b) => b.classList.toggle("on", on));
+  pump();
+}
+
+function releaseAll() { Object.keys(held).forEach((k) => setHeld(k, false)); }
+
+function emergencyStop() {
+  endTest();
+  releaseAll();
+  urgentStop = true;
+  pump();
+}
+
+document.querySelectorAll("[data-hold]").forEach((b) => {
+  const name = b.dataset.hold;
+  b.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    try { b.setPointerCapture(e.pointerId); } catch (_) {}
+    setHeld(name, true);
+  });
+  const up = (e) => { e.preventDefault(); setHeld(name, false); };
+  b.addEventListener("pointerup", up);
+  b.addEventListener("pointercancel", up);
+  b.addEventListener("lostpointercapture", up);
+  b.addEventListener("contextmenu", (e) => e.preventDefault());
+});
+
+$("btnStop").addEventListener("pointerdown", (e) => { e.preventDefault(); emergencyStop(); });
+$("btnRelease").addEventListener("click", () => { cfg.hold = false; saveCfg(); updateHoldButtons(); emergencyStop(); sendRaw("H 0\n"); });
+$("btnHoldArm").addEventListener("click", () => { cfg.hold = true; saveCfg(); updateHoldButtons(); sendRaw("H 1\n"); });
+function updateHoldButtons() {
+  $("btnHoldArm").classList.toggle("primary", cfg.hold);
+  $("btnRelease").classList.toggle("primary", !cfg.hold);
+}
+
+// Teclado (para probar desde un PC): flechas/WASD, Q = subir garra, E = bajar garra, espacio = STOP
+const KEYS = { ArrowUp: "fwd", w: "fwd", ArrowDown: "back", s: "back", ArrowLeft: "left", a: "left",
+               ArrowRight: "right", d: "right", q: "armUp", e: "armDown" };
+addEventListener("keydown", (e) => {
+  if (e.repeat || e.target.tagName === "INPUT") return;
+  if (e.code === "Space") { e.preventDefault(); emergencyStop(); return; }
+  const k = KEYS[e.key.length === 1 ? e.key.toLowerCase() : e.key];
+  if (k) { e.preventDefault(); setHeld(k, true); }
+});
+addEventListener("keyup", (e) => {
+  const k = KEYS[e.key.length === 1 ? e.key.toLowerCase() : e.key];
+  if (k) setHeld(k, false);
+});
+
+// Seguridad: si la página pierde el foco o se oculta, soltar todo y frenar
+document.addEventListener("visibilitychange", () => { if (document.hidden) emergencyStop(); else acquireWakeLock(); });
+addEventListener("blur", emergencyStop);
+addEventListener("pagehide", emergencyStop);
+
+// ---------- Calibración ----------
+function endTest() { if (testTimer) clearTimeout(testTimer); testTimer = null; test = null; }
+document.querySelectorAll("[data-test]").forEach((b) => {
+  b.addEventListener("click", () => {
+    if (!connected) { log("Conéctate primero para probar."); return; }
+    endTest(); releaseAll();
+    const m = b.dataset.test;
+    test = { state: [m === "A" ? 40 : 0, m === "E" ? 40 : 0, m === "D" ? 40 : 0] };
+    pump();
+    testTimer = setTimeout(() => { endTest(); urgentStop = true; pump(); }, 500);
+  });
+});
+for (const [id, key] of [["invA", "invA"], ["invE", "invE"], ["invD", "invD"]]) {
+  $(id).addEventListener("change", () => { cfg[key] = $(id).checked; saveCfg(); updateInvCode(); if (connected) sendConfig(); });
+}
+function updateInvCode() {
+  $("invCode").textContent = "INVERT_LEFT = " + (cfg.invA ? "True" : "False") + ", INVERT_RIGHT = " + (cfg.invE ? "True" : "False") +
+    ", INVERT_ARM = " + (cfg.invD ? "True" : "False");
+}
+for (const [id, key] of [["spdDrive", "drive"], ["spdTurn", "turn"], ["spdArm", "arm"]]) {
+  $(id).value = cfg[key]; $(id + "V").textContent = cfg[key] + "%";
+  $(id).addEventListener("input", () => { cfg[key] = +$(id).value; $(id + "V").textContent = cfg[key] + "%"; saveCfg(); pump(); });
+}
+$("invA").checked = cfg.invA; $("invE").checked = cfg.invE; $("invD").checked = cfg.invD;
+$("hubName").value = cfg.hubName;
+$("hubName").addEventListener("input", () => { cfg.hubName = $("hubName").value; saveCfg(); if (!connected) device = null; });
+updateInvCode(); updateHoldButtons();
+
+// ---------- Estado visual ----------
+function setStatus(text, cls) {
+  const s = $("status");
+  s.textContent = text;
+  s.className = "pill " + cls;
+  $("title").textContent = "🤖 " + (connected && device && device.name ? device.name : "Mando SPIKE Prime");
+}
+function log(t) { $("log").textContent = t; }
+function refreshStatus() {
+  if (!connected) { setStatus("Desconectado", "bad"); $("btnStartProg").hidden = true; return; }
+  if (progRunning === true) { setStatus("Conectado · programa activo", "ok"); $("btnStartProg").hidden = true; }
+  else if (progRunning === false) { setStatus("Conectado · programa NO activo", "warn"); $("btnStartProg").hidden = false; }
+  else setStatus("Conectado", "warn");
+}
+
+// ---------- Conexión ----------
+function showWarn(msg) { const w = $("warn"); w.innerHTML = msg; w.style.display = msg ? "block" : "none"; }
+
+function checkSupport() {
+  if (!navigator.bluetooth) {
+    const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+    showWarn(ios
+      ? "Safari en iPhone/iPad <b>no soporta Web Bluetooth</b>. Instala el navegador gratuito <b>Bluefy</b> y abre esta página allí."
+      : "Este navegador no soporta Web Bluetooth. Usa <b>Chrome en Android</b> (o Chrome/Edge en PC) y abre la página por <b>HTTPS</b>.");
+    return false;
+  }
+  if (!window.isSecureContext) { showWarn("Web Bluetooth necesita HTTPS. Abre esta página desde una dirección https:// (ver instrucciones)."); return false; }
+  showWarn("");
+  return true;
+}
+
+async function acquireWakeLock() {
+  try { if ("wakeLock" in navigator && !document.hidden) wakeLock = await navigator.wakeLock.request("screen"); } catch (e) {}
+}
+
+async function connect() {
+  if (!checkSupport()) return;
+  try {
+    setStatus("Buscando…", "warn");
+    if (!device) {
+      const name = cfg.hubName.trim();
+      const opts = $("showAll").checked
+        ? { acceptAllDevices: true, optionalServices: [SVC] }
+        : name
+          ? { filters: [{ name: name }], optionalServices: [SVC] }
+          : { filters: [{ services: [SVC] }, { namePrefix: "Pybricks" }], optionalServices: [SVC] };
+      device = await navigator.bluetooth.requestDevice(opts);
+      device.addEventListener("gattserverdisconnected", onDisconnected);
+    }
+    setStatus("Conectando…", "warn");
+    server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SVC);
+    cmdChar = await svc.getCharacteristic(CMD);
+    try {
+      const caps = await (await svc.getCharacteristic(CAPS)).readValue();
+      maxChar = caps.getUint16(0, true);
+    } catch (e) { maxChar = 20; }
+    cmdChar.addEventListener("characteristicvaluechanged", onNotify);
+    await cmdChar.startNotifications();
+    connected = true; progRunning = null; busy = false; dirty = false;
+    refreshStatus();
+    log("Conectado a " + (device.name || "hub") + " · máx. " + maxChar + " bytes por escritura");
+    acquireWakeLock();
+    urgentStop = true;
+    await sendConfig();
+    pump();
+    $("btnConnect").textContent = "Desconectar";
+  } catch (e) {
+    connected = false; refreshStatus();
+    log("No se pudo conectar: " + e.message);
+    try { if (device && device.gatt.connected) device.gatt.disconnect(); } catch (_) {}
+    device = null;                       // la próxima vez se abre de nuevo el selector
+    $("btnConnect").textContent = "Conectar";
+  }
+}
+
+async function disconnect() {
+  emergencyStop();
+  await new Promise((r) => setTimeout(r, 120));
+  try { if (device && device.gatt.connected) device.gatt.disconnect(); } catch (e) {}
+  onDisconnected();
+}
+
+function onDisconnected() {
+  const was = connected;
+  connected = false; busy = false; dirty = false; cmdChar = null; progRunning = null;
+  endTest(); releaseAll();
+  refreshStatus();
+  $("btnConnect").textContent = device ? "Reconectar" : "Conectar";
+  if (was) log("Conexión perdida: el hub detiene los motores por sí solo en menos de 0,5 s.");
+}
+
+function onNotify(ev) {
+  const v = ev.target.value;
+  const type = v.getUint8(0);
+  if (type === EVT_STATUS && v.byteLength >= 5) {
+    const running = (v.getUint32(1, true) & FLAG_USER_PROGRAM_RUNNING) !== 0;
+    if (running !== progRunning) { progRunning = running; refreshStatus(); }
+  } else if (type === EVT_STDOUT) {
+    const text = new TextDecoder().decode(new Uint8Array(v.buffer, v.byteOffset + 1, v.byteLength - 1)).trim();
+    if (text) {
+      log("Hub: " + text.replace(/\s+/g, " "));
+      if (text.includes("READY")) sendConfig();
+    }
+  }
+}
+
+$("btnConnect").addEventListener("click", () => { connected ? disconnect() : connect(); });
+$("btnStartProg").addEventListener("click", async () => {
+  if (!cmdChar) return;
+  try { await cmdChar.writeValueWithResponse(new Uint8Array([CMD_START_USER_PROGRAM])); log("Orden de iniciar programa enviada."); }
+  catch (e) { log("No se pudo iniciar el programa: " + e.message); }
+});
+
+checkSupport();
+refreshStatus();
+</script>
+</body>
+</html>
