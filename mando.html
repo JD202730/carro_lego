@@ -173,9 +173,10 @@
 
     <div class="sec">
       <h3>Laboratorio del hub (diagnóstico avanzado)</h3>
-      <div class="row"><span>Explora el hub y mide cuánto tarda en arrancar cada tipo de programa</span><button class="btn" id="btnLab">Ejecutar</button></div>
-      <div class="hint">No mueve ningún motor. Deja el robot <b>quieto</b>: dura unos 50 s y usa las ranuras 15 a 19 del hub. Al terminar, copia el registro completo
-        y pégalo en el chat. Solo funciona con la opción «Medir arranques, paradas y huecos» activada.</div>
+      <div class="row"><span>Laboratorio 1: mide cuánto tarda en arrancar cada tipo de programa</span><button class="btn" id="btnLab">Ejecutar</button></div>
+      <div class="row"><span>Laboratorio 2: ¿se pueden mandar órdenes por un archivo, sin reiniciar el programa?</span><button class="btn" id="btnLab2">Ejecutar</button></div>
+      <div class="hint">No mueven ningún motor. Deja el robot <b>quieto</b>. Cada uno dura unos 50 s y usa las ranuras 15 a 19 del hub. Al terminar, pulsa «Copiar registro
+        completo» y pégalo en el chat (o solo las líneas que empiezan por <b>LAB&gt;</b> o <b>LAB2&gt;</b>). Necesitan la opción «Medir arranques, paradas y huecos» activada.</div>
       <div class="row"><span id="labEstado" style="color:var(--muted)"></span></div>
     </div>
 
@@ -333,7 +334,7 @@ const state = {
   target: { A: 0, B: 0, C: 0, D: 0, E: 0, F: 0 },    // -100..100 por puerto (ya con la inversión aplicada)
   motors: {}, motorsKnown: false, battery: null, lastMs: null,
   sentKey: null, sending: false, fails: 0, running: null, starting: null, lastStarted: null, skips: 0, unkLogged: false, devLogged: false,
-  t0: performance.now(), typeOf: {}, prevMoving: false, hubReadyAt: 0, matrix: null, lab: false,
+  t0: performance.now(), typeOf: {}, prevMoving: false, hubReadyAt: 0, matrix: null, lab: false, labConsole: null,
   slotText: {}, lastUse: {}, tick: 0, warming: false, warm: null,   // lo que hay guardado en cada ranura del hub
   joy: { x: 0, y: 0 }, arm: 0, test: null, lvl: { l: 0, r: 0 },
   needStop: false, renewTimer: null, renewNext: false, testTimer: null, sendTimer: null, warmTimer: null,
@@ -589,6 +590,7 @@ function checkSupport() {
 async function connect() {
   if (!checkSupport()) return;
   try {
+    msg("");
     setEstado("Buscando hub…", "warn");
     const name = cfg.hubName.trim();
     const opts = cfg.showAll ? { acceptAllDevices: true, optionalServices: [SERVICE] }
@@ -623,12 +625,36 @@ async function connect() {
     recompute();                                              // deja el robot en estado de reposo
     scheduleWarm();                                           // precarga de los programas más usados (espera a conocer los motores)
   } catch (err) {
-    log("Error de conexión: " + err);
-    setEstado(err.name === "NotFoundError" ? "No se eligió ningún hub" : "Error: " + err.message, "bad");
+    const name = (err && err.name) || "Error", detalle = (err && err.message) || String(err);
+    log("Error de conexión: " + name + ": " + detalle);
+    // Chrome usa NotFoundError para cosas distintas: según el texto se explica qué ha pasado de verdad.
+    let texto;
+    if (name === "NotFoundError" && /cancel/i.test(detalle)) texto = "No se eligió ningún hub: la lista de Bluetooth no se abrió, salió vacía o se cerró sin elegir";
+    else if (name === "NotFoundError" && /adapter/i.test(detalle)) texto = "El Bluetooth del celular está apagado o no está disponible";
+    else if (name === "NotFoundError") texto = "El dispositivo elegido no es un hub compatible (" + detalle + ")";
+    else if (name === "SecurityError" || name === "NotAllowedError") texto = "Chrome ha bloqueado el Bluetooth para esta página (revisa Permisos): " + detalle;
+    else texto = "Error: " + detalle;
+    setEstado(texto, "bad");
     try { if (state.device && state.device.gatt.connected) state.device.gatt.disconnect(); } catch (_) {}
     state.device = null; state.rx = null;
     $("btnConnect").textContent = "Conectar";
+    diagnoseBluetooth(name);
   }
+}
+// Autodiagnóstico: dice si el Bluetooth del celular está disponible y si Chrome lo tiene permitido para esta página.
+async function diagnoseBluetooth(errName) {
+  const datos = [];
+  let disponible = null, permiso = null;
+  try { disponible = await navigator.bluetooth.getAvailability(); datos.push("Bluetooth del celular disponible: " + (disponible ? "sí" : "NO")); }
+  catch (e) { datos.push("Bluetooth disponible: no se puede consultar"); }
+  try { permiso = (await navigator.permissions.query({ name: "bluetooth" })).state; datos.push("permiso de Bluetooth de esta página: " + permiso); }
+  catch (e) { datos.push("permiso de Bluetooth de esta página: no se puede consultar"); }
+  datos.push("página segura (https): " + (window.isSecureContext ? "sí" : "NO"), "navegador: " + navigator.userAgent);
+  log("diag Bluetooth: " + datos.join(" · "));
+  if (disponible === false) msg("El Bluetooth del celular no está disponible: enciéndelo y concede a Chrome el permiso «Dispositivos cercanos» (o «Ubicación» en Android 11 o anterior).", true);
+  else if (permiso === "denied") msg("Chrome tiene el Bluetooth BLOQUEADO para esta página: toca el icono a la izquierda de la dirección → Permisos → Bluetooth → Permitir.", true);
+  else if (errName === "SecurityError" || errName === "NotAllowedError") msg("Chrome no permite el Bluetooth en esta página: toca el icono a la izquierda de la dirección → Permisos → Bluetooth → Permitir.", true);
+  else if (errName === "NotFoundError") msg("Si la lista de Bluetooth no llegó a abrirse, revisa los permisos de Chrome; si salió vacía, reinicia el hub y pulsa su botón Bluetooth.", true);
 }
 async function disconnect() {
   stopAll();
@@ -701,7 +727,12 @@ function handleMessage(m) {
   if (REPLY_NAMES[m[0]]) dlog("<< " + REPLY_NAMES[m[0]] + (m[1] === 0 ? " ACK" : " NACK") + (i >= 0 && state.waiters[i].ignore ? " (de una parada rápida)" : i < 0 ? " (nadie la esperaba)" : ""));
   if (i >= 0) { const w = state.waiters.splice(i, 1)[0]; clearTimeout(w.timer); if (!w.ignore) w.resolve(m); }
   if (m[0] === 0x3C && connected()) parseDevices(m);
-  else if (m[0] === 0x21) { const t = new TextDecoder().decode(m.slice(1)).replace(/\0.*$/s, "").trim(); if (cfg.diag) dlog("<< consola del hub: " + t); else log("Hub: " + t); }
+  else if (m[0] === 0x21) {
+    const t = new TextDecoder().decode(m.slice(1)).replace(/\0.*$/s, "").trim();
+    if (state.labConsole) { if (t) state.labConsole.push(t); }     // en el laboratorio 2 la consola se agrupa en pocas líneas
+    else if (cfg.diag) dlog("<< consola del hub: " + t);
+    else log("Hub: " + t);
+  }
 }
 function parseDevices(m) {
   const dv = new DataView(m.buffer, m.byteOffset);
@@ -953,17 +984,6 @@ async function warmUp() {
 // 1) Le pregunta al propio hub qué módulos y funciones tiene (¿hay algún canal para recibir órdenes sin reiniciar el programa?).
 // 2) Mide cuánto tarda en ejecutarse cada tipo de programa tras confirmar el arranque, usando un píxel de la pantalla 5x5 como
 //    señal (la telemetría lo muestra, no depende del búfer de la consola) y un "ping" para ver cuánto se queda ocupado el hub.
-const LAB_EXPLORE = [
-  "def p(x):", " x=str(x)", " while x:", "  print(x[:150])", "  x=x[150:]",
-  "try:", " import sys", " p('sys: '+str(sys.implementation)+' '+str(sys.version))", "except Exception as e:", " p('sys err '+str(e))",
-  "try:", " import hub", " p('hub: '+str(dir(hub)))", " try:", "  p('hub.config: '+str(hub.config))", " except Exception as e:", "  p('hub.config err '+str(e))",
-  "except Exception as e:", " p('hub err '+str(e))",
-  "try:", " from hub import light_matrix as lm", " p('light_matrix: '+str(dir(lm)))", "except Exception as e:", " p('lm err '+str(e))",
-  "try:", " import os", " p('raiz: '+str(os.listdir('/')))", " for d in os.listdir('/'):", "  try:", "   p('/'+d+': '+str(os.listdir('/'+d)))", "  except Exception as e:", "   pass",
-  "except Exception as e:", " p('os err '+str(e))",
-  "try:", " help('modules')", "except Exception as e:", " p('help err '+str(e))",
-  "p('fin de la exploracion')",
-].join("\n");
 const labPixel = (x, y) => "lm.clear();lm.set_pixel(" + x + "," + y + ",100)";
 const labProbe = {
   // imports como los programas reales y bucle con runloop
@@ -1003,51 +1023,151 @@ async function runLab() {
   for (let i = 0; i < 40 && state.sending; i++) await sleep(100);
   if (state.sending) { msg("El mando está ocupado; inténtalo en unos segundos.", true); return; }
   state.lab = true; state.sending = true; clearTimeout(state.renewTimer); clearTimeout(state.warmTimer);
-  $("btnLab").disabled = true;
+  $("btnLab").disabled = true; $("btnLab2").disabled = true;
   const labSlots = [19, 18, 17, 16, 15];
   try {
     await request(MSG.deviceNotif(100), 0x29).catch(() => {});
-    labLog("== LABORATORIO: inicio (no se mueve ningún motor) ==");
-    // 1) exploración del hub
-    labLog("1/6 explorando el hub (la consola tarda unos segundos en mostrar el resultado)…");
-    await uploadInto(labSlots[0], LAB_EXPLORE);
-    await startSlot(labSlots[0]);
-    await sleep(9000);
-    // 2) con un programa en marcha
-    labLog("2/6 arrancar un programa MIENTRAS OTRO ESTÁ EN MARCHA…");
+    state.labConsole = [];
+    labLog("== LABORATORIO 1: inicio (no se mueve ningún motor) ==");
+    // 1) con un programa en marcha
+    labLog("1/5 arrancar un programa MIENTRAS OTRO ESTÁ EN MARCHA…");
     await uploadInto(labSlots[1], labProbe.base());
     await startSlot(labSlots[1]);
     await sleep(3500);
     await labMeasure("Con otro programa en marcha (programa como los reales)", labSlots[0], labProbe.real(0, 0), 0, 0);
     await sleep(3500);
-    // 3) sin programa en marcha (parada explícita y espera)
-    labLog("3/6 arrancar SIN ningún programa en marcha (tras parar y esperar)…");
+    // 2) sin programa en marcha (parada explícita y espera)
+    labLog("2/5 arrancar SIN ningún programa en marcha (tras parar y esperar)…");
     if (state.running !== null) { await request(MSG.programFlow(true, state.running), 0x1F, 4000).catch(() => {}); state.running = null; }
     await sleep(4000);
     await labMeasure("Sin ningún programa en marcha (programa como los reales)", labSlots[2], labProbe.real(1, 0), 1, 0);
     await sleep(3500);
-    // 4) programa mínimo que termina solo, y qué tarda el siguiente
-    labLog("4/6 programa mínimo que termina solo…");
+    // 3) programa mínimo que termina solo, y qué tarda el siguiente
+    labLog("3/5 programa mínimo que termina solo…");
     await labMeasure("Programa mínimo que termina solo (con otro en marcha)", labSlots[3], labProbe.fin(2, 0), 2, 0);
     await sleep(4000);
-    labLog("5/6 arrancar cuando el anterior ya terminó solo…");
+    labLog("4/5 arrancar cuando el anterior ya terminó solo…");
     await labMeasure("Arrancar tras un programa que terminó solo (programa como los reales)", labSlots[4], labProbe.real(3, 0), 3, 0);
     await sleep(3500);
-    labLog("6/6 programa mínimo en bucle, sin runloop ni motor…");
-    await labMeasure("Programa mínimo en bucle (con otro en marcha)", labSlots[1], labProbe.bucle(4, 0), 4, 0);
+    labLog("5/5 programa mínimo con un bucle de cálculo, sin runloop ni motor…");
+    await labMeasure("Programa mínimo con bucle de cálculo (con otro en marcha)", labSlots[1], labProbe.bucle(4, 0), 4, 0);
     await sleep(2500);
-    labLog("== LABORATORIO: fin. Copia el registro completo y pégalo en el chat. ==");
+    labLog("== LABORATORIO 1: fin. Copia las líneas LAB> (o el registro completo) y pégalas en el chat. ==");
   } catch (e) {
     labLog("El laboratorio se interrumpió: " + e.message);
   } finally {
+    state.labConsole = null;
     for (const s of labSlots) state.slotText[s] = null;       // esas ranuras ya no tienen los programas del mando
     state.running = null; state.lastStarted = null; state.sentKey = null; state.hubReadyAt = performance.now() + HUB_LAUNCH_MS;
     request(MSG.deviceNotif(cfg.diag ? 200 : 300), 0x29).catch(() => {});
-    state.lab = false; state.sending = false; $("btnLab").disabled = false;
+    state.lab = false; state.sending = false; $("btnLab").disabled = false; $("btnLab2").disabled = false;
     recompute(); scheduleWarm();                              // el mando vuelve a su estado de reposo y vuelve a precargar
   }
 }
 $("btnLab").addEventListener("click", runLab);
+
+// ---- Laboratorio 2: ¿puede un programa en marcha leer órdenes de un archivo que el celular reescribe? ----
+// Se deja corriendo UN programa "puente" que mira cada 30 ms un archivo de otra ranura. El celular solo cambia ese archivo (subir
+// un archivo pequeño no reinicia nada) y se mide cuánto tarda el programa en enterarse (enciende un píxel por cada orden nueva).
+const LAB2_EXPLORE = [
+  "import os", "def p(x):", " x=str(x)", " while x:", "  print(x[:150])", "  x=x[150:]",
+  "try:", " import sys", " p('sys: '+str(sys.implementation))", "except Exception as e:", " p('sys err '+str(e))",
+  "try:", " import hub", " p('hub.config: '+str(hub.config))", " p('hub dir: '+str(dir(hub)))", "except Exception as e:", " p('hub err '+str(e))",
+  "try:", " import bluetooth", " p('bluetooth dir: '+str(dir(bluetooth)))", "except Exception as e:", " p('bt err '+str(e))",
+  "def walk(d,n):", " try:", "  names=os.listdir(d)", " except Exception as e:", "  p('no se puede listar '+d)", "  return",
+  " for x in names:", "  q=d+'/'+x", "  try:", "   st=os.stat(q)", "  except Exception as e:", "   p('stat err '+q)", "   continue",
+  "  if st[0]&0x4000:", "   p('D '+q)", "   if n<4:walk(q,n+1)", "  else:", "   p('F '+q+' '+str(st[6]))",
+  "walk('/flash/program',0)", "walk('/flash/config',0)",
+  "try:", " f=open('/flash/README.txt')", " p('README: '+f.read(120))", " f.close()", "except Exception as e:", " p('readme err '+str(e))",
+  "p('fin de la exploracion 2')",
+].join("\n");
+const LAB2_BRIDGE = [
+  "import os,runloop", "from hub import light_matrix as lm",
+  "def walk(d,n):", " r=[]", " try:", "  names=os.listdir(d)", " except Exception as e:", "  return r",
+  " for x in names:", "  q=d+'/'+x", "  try:", "   if os.stat(q)[0]&0x4000:", "    if n<4:r+=walk(q,n+1)", "   else:", "    r.append(q)",
+  "  except Exception as e:", "   pass", " return r",
+  "target=None", "for f in walk('/flash/program',0):", " try:", "  h=open(f)", "  t=h.read(200)", "  h.close()", "  if 'LABCHAN' in t:", "   target=f", "   break",
+  " except Exception as e:", "  pass",
+  "print('canal: '+str(target))",
+  "try:", " lm.clear()", "except Exception as e:", " print('lm err '+str(e))",
+  "last=''", "async def w():", " global last", " while 1:", "  if target:", "   try:", "    h=open(target)", "    s=h.readline()", "    h.close()",
+  "    if s!=last:", "     last=s", "     n=int(s.split()[2])", "     lm.set_pixel(n%5,(n//5)%5,100)", "     print('cmd '+str(n))",
+  "   except Exception as e:", "    pass", "  await runloop.sleep_ms(30)", "runloop.run(w())",
+].join("\n");
+const labChan = n => "# LABCHAN " + n + "\n";
+function labFlush(tag, prefix) {                                // agrupa la consola del hub en pocas líneas legibles
+  const t = state.labConsole || []; state.labConsole = [];
+  let cur = "";
+  for (const s of t) { if (cur && (cur + " | " + s).length > 700) { log(tag + " " + prefix + cur); cur = s; } else cur = cur ? cur + " | " + s : s; }
+  if (cur) log(tag + " " + prefix + cur);
+  return t;
+}
+const labLog2 = t => { log("LAB2> " + t); $("labEstado").textContent = t; };
+const pixelLit = idx => !!state.matrix && state.matrix[idx] > 20;
+async function waitLit(idx, timeout) {
+  const t0 = performance.now();
+  while (performance.now() - t0 < timeout) { if (pixelLit(idx)) return performance.now(); await sleep(10); }
+  return null;
+}
+async function runLab2() {
+  if (!connected() || !state.info) { msg("Conecta el hub antes de usar el laboratorio.", true); return; }
+  if (!cfg.diag) { msg("Activa «Medir arranques, paradas y huecos» para usar el laboratorio.", true); return; }
+  if (state.lab) return;
+  stopAll();
+  for (let i = 0; i < 40 && state.sending; i++) await sleep(100);
+  if (state.sending) { msg("El mando está ocupado; inténtalo en unos segundos.", true); return; }
+  state.lab = true; state.sending = true; clearTimeout(state.renewTimer); clearTimeout(state.warmTimer);
+  $("btnLab").disabled = true; $("btnLab2").disabled = true;
+  const labSlots = [19, 18, 17];
+  try {
+    state.labConsole = [];
+    await request(MSG.deviceNotif(100), 0x29).catch(() => {});
+    labLog2("== LABORATORIO 2: inicio (no se mueve ningún motor) ==");
+    labLog2("1/4 explorando el sistema de archivos del hub (unos 12 s)…");
+    await uploadInto(17, LAB2_EXPLORE);
+    await startSlot(17);
+    await sleep(11000);
+    labFlush("LAB2>", "hub: ");
+    labLog2("2/4 preparando el canal: archivo de comandos en la ranura 19 y programa puente en la 18…");
+    await uploadInto(19, labChan(0));
+    await uploadInto(18, LAB2_BRIDGE);
+    await startSlot(18);
+    await sleep(5000);
+    labFlush("LAB2>", "puente: ");
+    labLog2("3/4 enviando 10 órdenes por archivo y midiendo cuándo las ve el programa…");
+    const res = [];
+    for (let n = 1; n <= 10; n++) {
+      const idx = (Math.floor(n / 5) % 5) * 5 + (n % 5);
+      const t0 = performance.now();
+      const lit = waitLit(idx, 6000);
+      let ok = false;
+      try { ok = await upload(new TextEncoder().encode(labChan(n)), 19); } catch (e) { ok = false; }   // sin tocar el programa en marcha
+      const tUp = performance.now();
+      const tVis = await lit;
+      res.push({ n, ok, subida: Math.round(tUp - t0), visible: tVis === null ? null : Math.round(tVis - t0) });
+      labLog2("orden " + n + ": subida " + (ok ? "" : "RECHAZADA ") + Math.round(tUp - t0) + " ms · el programa la vio a los " + (tVis === null ? "(nunca, en 6 s)" : Math.round(tVis - t0) + " ms"));
+      await sleep(1200);
+    }
+    labFlush("LAB2>", "puente: ");
+    const vis = res.filter(r => r.visible !== null).map(r => r.visible);
+    const up = res.map(r => r.subida);
+    if (!vis.length) labLog2("RESULTADO: el programa NO vio ninguna orden por archivo (mira las líneas «hub:» y «puente:» de arriba: ¿se encontró el archivo del canal?)");
+    else labLog2("RESULTADO: " + vis.length + "/10 órdenes vistas · tiempo hasta que el programa la ve: mín " + Math.min(...vis) + " ms, media " + Math.round(vis.reduce((a, b) => a + b, 0) / vis.length) +
+      " ms, máx " + Math.max(...vis) + " ms · subida media " + Math.round(up.reduce((a, b) => a + b, 0) / up.length) + " ms");
+    labLog2("== LABORATORIO 2: fin. Copia las líneas LAB2> y pégalas en el chat. ==");
+  } catch (e) {
+    labLog2("El laboratorio se interrumpió: " + e.message);
+  } finally {
+    labFlush("LAB2>", "consola: ");
+    state.labConsole = null;
+    for (const s of labSlots) state.slotText[s] = null;
+    state.running = null; state.lastStarted = null; state.sentKey = null; state.hubReadyAt = performance.now() + HUB_LAUNCH_MS;
+    request(MSG.deviceNotif(cfg.diag ? 200 : 300), 0x29).catch(() => {});
+    state.lab = false; state.sending = false; $("btnLab").disabled = false; $("btnLab2").disabled = false;
+    recompute(); scheduleWarm();
+  }
+}
+$("btnLab2").addEventListener("click", runLab2);
 
 checkSupport();
 recompute(false);
